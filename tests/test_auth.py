@@ -346,3 +346,23 @@ def test_expired_error_explains_the_keychain_precedence(fake_keychain, monkeypat
         _call(_rejecting_handler)
 
     assert "keychain" in str(excinfo.value).lower()
+
+
+def test_refresh_is_never_retried(fake_keychain):
+    """Hard rule 3: rotation is not idempotent, so a lost response must not be replayed.
+
+    A retry would send a token TopLogger may have already killed, burning the pair it
+    issued in the attempt we did not see the answer to.
+    """
+    _seed(fake_keychain)
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(503)
+
+    with pytest.raises(Exception, match="TopLogger returned 503"):
+        _call(handler)
+
+    assert len(calls) == 1, "the refresh mutation must be sent at most once"
+    assert _stored(fake_keychain) == OLD_REFRESH, "a failed send leaves the token usable"

@@ -33,10 +33,11 @@ from sources.toplogger.client import GraphQLError, TopLoggerError, post_graphql
 
 __all__ = [
     "AuthError",
+    "RefreshTokenExpired",
     "RefreshTokenMissing",
-    "clear_stored_token",
     "RefreshTokenRotationFailed",
     "SyncAlreadyRunning",
+    "clear_stored_token",
     "get_access_token",
     "sync_lock",
 ]
@@ -201,7 +202,15 @@ def _resolve_refresh_token() -> SecretStr:
 
 
 def _refresh(refresh_token: SecretStr, **post_kwargs: Any) -> dict[str, Any]:
-    """Exchange a refresh token for a new token pair."""
+    """Exchange a refresh token for a new token pair.
+
+    Sent with ``retry=False``: rotation is not idempotent. If TopLogger issues a new
+    pair and the response is then lost to a timeout or a 5xx, a retry would send a
+    token the server has already killed — burning the pair it just issued and
+    forcing a manual browser login (hard rule 3). Failing after one attempt is the
+    cheap outcome: a request that never reached the server leaves the stored token
+    intact, so re-running works.
+    """
     query = _QUERY_PATH.read_text()
     try:
         data = post_graphql(
@@ -211,6 +220,7 @@ def _refresh(refresh_token: SecretStr, **post_kwargs: Any) -> dict[str, Any]:
             # is needed at all is open question 6 in docs/PROJECT_CONTEXT.md §6 —
             # this mirrors the known-working shape rather than guessing.
             bearer=refresh_token,
+            retry=False,
             **post_kwargs,
         )
     except GraphQLError as exc:

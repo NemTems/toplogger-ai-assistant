@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 import threading
 import time
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
@@ -34,9 +35,22 @@ __all__ = [
 # leaks a credential into a log.
 _TOKEN_SHAPED = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+){0,2}|[A-Za-z0-9_-]{40,}")
 
+# Shape matching alone cannot catch a short opaque credential, so the secrets we
+# actually sent are masked by value too. The floor stops a stray empty or
+# one-character "secret" from shredding the whole message.
+_MIN_SECRET_LENGTH = 8
 
-def redact(text: str) -> str:
-    """Replace anything token-shaped in ``text`` with ``<REDACTED>``."""
+
+def redact(text: str, *secrets: SecretStr | str | None) -> str:
+    """Replace known ``secrets`` and anything token-shaped in ``text`` with ``<REDACTED>``.
+
+    Shape matching is the backstop, not the guarantee: pass the credentials the
+    request actually carried so a short opaque token is masked as well.
+    """
+    for secret in secrets:
+        value = secret.get_secret_value() if isinstance(secret, SecretStr) else secret
+        if value and len(value) >= _MIN_SECRET_LENGTH:
+            text = text.replace(value, "<REDACTED>")
     return _TOKEN_SHAPED.sub("<REDACTED>", text)
 
 
@@ -52,14 +66,21 @@ class GraphQLError(TopLoggerError):
     """The endpoint returned 200 with a non-empty ``errors`` array.
 
     Carries the GraphQL error ``codes`` (e.g. ``UNAUTHENTICATED``) so callers can
-    branch on them without parsing message text.
+    branch on them without parsing message text. Codes come off the wire like
+    messages do, so they are redacted too — a real code never looks token-shaped,
+    so branching on them is unaffected.
     """
 
-    def __init__(self, messages: list[str], codes: list[str]) -> None:
-        self.codes = codes
-        self.messages = [redact(m) for m in messages]
+    def __init__(
+        self,
+        messages: list[str],
+        codes: list[str],
+        secrets: Sequence[SecretStr | str] = (),
+    ) -> None:
+        self.codes = [redact(c, *secrets) for c in codes]
+        self.messages = [redact(m, *secrets) for m in messages]
         detail = "; ".join(self.messages) or "no message"
-        super().__init__(f"GraphQL error {codes or ['<no code>']}: {detail}")
+        super().__init__(f"GraphQL error {self.codes or ['<no code>']}: {detail}")
 
 
 # Rate limiting is process-wide: one lock, one clock. Hard rule 5 caps us at
@@ -98,6 +119,8 @@ def post_graphql(
     variables: dict[str, Any] | None = None,
     *,
     bearer: SecretStr | None = None,
+    secrets: Sequence[SecretStr | str] = (),
+    retry: bool = True,
     client: httpx.Client | None = None,
     sleep=time.sleep,
     clock=time.monotonic,
@@ -108,6 +131,12 @@ def post_graphql(
         query: The GraphQL document.
         variables: Operation variables, if any.
         bearer: Token for the ``Authorization`` header. Never logged.
+        secrets: Credentials this request carries besides ``bearer`` (e.g. a token
+            passed as a variable), masked out of any error this raises.
+        retry: ``False`` for a non-idempotent operation, where replaying a request
+            whose response was lost does real damage — refresh-token rotation
+            being the case that matters here. The call then fails after one
+            attempt instead of retrying transient errors.
         client: An ``httpx.Client`` to use instead of creating one. Tests pass a
             client built on ``httpx.MockTransport``; nothing else should pass this.
 
@@ -122,33 +151,35 @@ def post_graphql(
 
     payload: dict[str, Any] = {"query": query, "variables": variables or {}}
     min_interval = 1.0 / settings.rate_limit_per_second
+    all_secrets = [*secrets, bearer] if bearer is not None else list(secrets)
+    last_attempt = settings.max_retries if retry else 0
 
     owns_client = client is None
     http = client or httpx.Client(timeout=settings.request_timeout_seconds)
     try:
         last_error: Exception | None = None
-        for attempt in range(settings.max_retries + 1):
+        for attempt in range(last_attempt + 1):
             _throttle(min_interval, sleep=sleep, clock=clock)
             try:
                 response = http.post(settings.graphql_url, json=payload, headers=headers)
             except httpx.HTTPError as exc:
-                # Connect errors and timeouts are transient: retry.
+                # Connect errors and timeouts are transient: retry, unless the
+                # operation is one we must not replay.
                 last_error = exc
-                if attempt < settings.max_retries:
+                if attempt < last_attempt:
                     sleep(2**attempt)
                     continue
                 raise TransportError(
-                    f"request to TopLogger failed after {attempt + 1} attempts: "
-                    f"{type(exc).__name__}"
+                    f"request to TopLogger failed after {_attempts(attempt)}: {type(exc).__name__}"
                 ) from None
 
             if response.status_code >= 500:
                 last_error = TransportError(f"server error {response.status_code}")
-                if attempt < settings.max_retries:
+                if attempt < last_attempt:
                     sleep(2**attempt)
                     continue
                 raise TransportError(
-                    f"TopLogger returned {response.status_code} after {attempt + 1} attempts"
+                    f"TopLogger returned {response.status_code} after {_attempts(attempt)}"
                 )
 
             if response.status_code >= 400:
@@ -156,7 +187,7 @@ def post_graphql(
                 # burns requests against a rate limit for no possible gain.
                 raise TransportError(f"TopLogger returned {response.status_code}")
 
-            return _parse(response)
+            return _parse(response, all_secrets)
 
         raise TransportError("retry loop exhausted") from last_error
     finally:
@@ -164,16 +195,29 @@ def post_graphql(
             http.close()
 
 
-def _parse(response: httpx.Response) -> dict[str, Any]:
+def _attempts(attempt: int) -> str:
+    """``"1 attempt"`` / ``"3 attempts"`` for an error message."""
+    count = attempt + 1
+    return f"{count} attempt{'' if count == 1 else 's'}"
+
+
+def _parse(
+    response: httpx.Response,
+    secrets: Sequence[SecretStr | str] = (),
+) -> dict[str, Any]:
     """Pull ``data`` out of a 200 response, raising on a GraphQL ``errors`` array."""
     try:
         body = response.json()
     except ValueError:
         raise TransportError("TopLogger returned a non-JSON body") from None
 
-    if isinstance(body, list):
-        # Batched responses are a Phase 2 concern; reject rather than guess.
-        raise TransportError("unexpected batched response for a single operation")
+    if not isinstance(body, dict):
+        if isinstance(body, list):
+            # Batched responses are a Phase 2 concern; reject rather than guess.
+            raise TransportError("unexpected batched response for a single operation")
+        # A bare JSON scalar is not a GraphQL response; say so instead of
+        # tripping over AttributeError below.
+        raise TransportError(f"TopLogger returned an unexpected JSON body ({type(body).__name__})")
 
     errors = body.get("errors") or []
     if errors:
@@ -183,7 +227,7 @@ def _parse(response: httpx.Response) -> dict[str, Any]:
             for e in errors
             if isinstance(e.get("extensions"), dict) and "code" in e["extensions"]
         ]
-        raise GraphQLError(messages, codes)
+        raise GraphQLError(messages, codes, secrets)
 
     data = body.get("data")
     if data is None:
