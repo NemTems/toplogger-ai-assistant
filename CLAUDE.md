@@ -9,7 +9,10 @@ test it quickly".
 
 1. **Secrets.** Never print, log, commit, echo into a shell, or include in an error message
    any access token, refresh token, password or reCAPTCHA token. Redact as `<REDACTED>`.
-   Tokens live in the OS keychain via `keyring`, nowhere else.
+   Tokens live in the OS keychain via `keyring`. The one exception is the one-time
+   bootstrap: a refresh token may be pasted by hand into `.env` as
+   `TOPLOGGER_REFRESH_TOKEN`, which the next run imports into the keychain before
+   telling you to delete the line. Nothing ever writes a token back to `.env`.
 2. **Never automate login.** Do not call `authSignin`, and never attempt to obtain, solve or
    bypass a reCAPTCHA. Authentication only ever uses `authSigninRefreshToken` with a refresh
    token the user supplied.
