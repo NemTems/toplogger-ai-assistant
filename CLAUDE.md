@@ -25,14 +25,28 @@ test it quickly".
 
 ## Status
 
-The repo currently contains **planning documents only** — no source code, tests, or build
-tooling yet. `PROJECT_CONTEXT.md` (what is known about the data) and `ROADMAP.md` (phased
-plan, each phase with a "done when") are the source of truth; read them before starting work
-and update them when a fact or decision changes. Roadmap Phase 0 (repo skeleton) is the next
-implementation step.
+Roadmap **Phase 0 is done**: uv project, ruff, pytest, `config.py`, the `Source` protocol and
+the package skeleton. Phase 1 (auth module) is next and has not been started.
 
-Planned tooling (not yet present): Python with `uv`, `pytest`, `ruff`. `ROADMAP.md` refers to
-an `AGENTS.md` layout spec that does not exist yet.
+`AGENTS.md` is the working contract — layout, conventions, and "ask before" list. It repeats
+the hard rules above; if the two ever drift, this file wins on rules.
+`docs/PROJECT_CONTEXT.md` (facts about the data) and `docs/ROADMAP.md` (phases, each with a
+"done when") are the source of truth; read them before starting and update them when a fact
+or decision changes.
+
+## Commands
+
+```bash
+uv sync                                          # install deps (Python 3.12)
+uv run pytest                                    # full suite
+uv run pytest tests/test_config.py::test_defaults  # a single test
+uv run ruff check . && uv run ruff format --check .
+```
+
+The flat layout is not installed into the venv (`[tool.uv] package = false`), so
+`pythonpath = ["."]` in `[tool.pytest.ini_options]` is what lets tests import `config` and
+`sources`. Plain `python -m pytest` masks a breakage here by adding the CWD itself — use
+`uv run pytest` when verifying.
 
 ## What this project is
 
@@ -46,7 +60,7 @@ questions like "which styles am I weak on", "is the gym stiff", "what should I p
 Single endpoint: `POST https://app.toplogger.nu/graphql`. It accepts a JSON array of
 operations and GraphQL aliases (`c1: climb(...) c2: climb(...)`), so batch aggressively —
 many climbs per request. TopLogger has **no public API**; queries were captured from browser
-devtools and are documented in `PROJECT_CONTEXT.md` §2.
+devtools and are documented in `docs/PROJECT_CONTEXT.md` §2.
 
 Gym catalog (`climbs`) is public. Anything user-scoped requires auth.
 
@@ -58,7 +72,7 @@ mid-run means the user has to log in manually in a browser — hence hard rules 
 
 ## Non-obvious field semantics
 
-These trip up anyone reading the raw API (full detail in `PROJECT_CONTEXT.md` §3):
+These trip up anyone reading the raw API (full detail in `docs/PROJECT_CONTEXT.md` §3):
 
 - **Grades** are integers: Font scale × 100 with sixths — `600` 6A, `617` 6A+, `633` 6B,
   `650` 6B+, `667` 6C, `683` 6C+, `700` 7A. Below 5A the steps are irregular. `0` is an
@@ -99,6 +113,6 @@ any token state file (see hard rules 1, 4, 7).
 
 ## Open questions
 
-`PROJECT_CONTEXT.md` §6 tracks unresolved unknowns (whether gym metadata/stats/toppers work
+`docs/PROJECT_CONTEXT.md` §6 tracks unresolved unknowns (whether gym metadata/stats/toppers work
 unauthenticated, whether `climbUserDays(limit:)` is capped at 10, the comment query shape, the
 media base URL). Answer them with a request rather than assuming, and record the answer there.
