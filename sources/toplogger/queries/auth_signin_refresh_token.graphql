@@ -1,0 +1,21 @@
+# Exchange a refresh token for a short-lived access token.
+#
+# Returns a NEW refresh token alongside the access token; the one sent here is dead
+# the moment this succeeds (docs/PROJECT_CONTEXT.md §1). Whatever calls this must
+# persist `refresh.token` before doing anything else.
+#
+# Never paired with `authSignin`, which needs a reCAPTCHA and is manual-only
+# (AGENTS.md hard rule 2).
+
+mutation AuthSigninRefreshToken($refreshToken: JWT!) {
+  authSigninRefreshToken(refreshToken: $refreshToken) {
+    access {
+      token
+      expiresAt
+    }
+    refresh {
+      token
+      expiresAt
+    }
+  }
+}

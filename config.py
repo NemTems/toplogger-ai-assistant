@@ -40,6 +40,18 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
     """Root directory for local data (gitignored: raw/, db/)."""
 
+    graphql_url: str = "https://app.toplogger.nu/graphql"
+    """TopLogger's single GraphQL endpoint."""
+
+    request_timeout_seconds: float = Field(default=30.0, gt=0)
+    """Per-request timeout for HTTP calls to TopLogger."""
+
+    max_retries: int = Field(default=3, ge=0)
+    """Retries for transient failures (connect errors, timeouts, 5xx). Never for 4xx."""
+
+    keyring_service: str = "toplogger-ai-assistant"
+    """OS keychain service name under which the refresh token is stored."""
+
     @field_validator("user_id", mode="before")
     @classmethod
     def _blank_is_unset(cls, value: object) -> object:
