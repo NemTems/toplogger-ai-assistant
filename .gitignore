@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project data — raw and processed TopLogger data stays local, never committed
+data/
