@@ -52,6 +52,17 @@ class Settings(BaseSettings):
     keyring_service: str = "toplogger-ai-assistant"
     """OS keychain service name under which the refresh token is stored."""
 
+    batch_size: int = Field(default=25, ge=1, le=100)
+    """Climbs per aliased GraphQL request. Hard rule 5 says batch; this says how much."""
+
+    page_size: int = Field(default=10, ge=1, le=10)
+    """Page size for paginated list operations (e.g. per-climb toppers).
+
+    Hard-capped at 10: confirmed live 2026-09-23 that TopLogger answers
+    ``climbUsers(pagination: {perPage: 11})`` with ``BAD_REQUEST`` while 10 succeeds.
+    The web app never sends more than 10 either.
+    """
+
     @field_validator("user_id", mode="before")
     @classmethod
     def _blank_is_unset(cls, value: object) -> object:
