@@ -1,0 +1,59 @@
+{
+  "_note": [
+    "Hand-written, NOT a recording. Two climbUsers pages as the server would send them",
+    "if the query asked for identities. queries/climb_users.graphql does not ask for",
+    "them, so a real response has only tickType and the date field; the extra keys here",
+    "exist so tests/test_adapter.py can prove aggregate_toppers drops them even when",
+    "they are present (hard rule 4, second defence).",
+    "Every person here is invented. Expected aggregate: tick_count 5, flash 2,",
+    "redpoint 2, unconfirmed 1; ticks_by_date 2026-09-01 x2, 2026-09-02 x2, 2026-09-03 x1."
+  ],
+  "_identity_strings_that_must_not_survive": [
+    "Fake Climber",
+    "Another Fake Person",
+    "Third Fake Human",
+    "usr-fake-0001",
+    "usr-fake-0002",
+    "usr-fake-0003",
+    "https://example.invalid/avatars/fake-one.png"
+  ],
+  "pages": [
+    {
+      "data": [
+        {
+          "tickType": 2,
+          "tickedFirstAtDate": "2026-09-01",
+          "user": {
+            "id": "usr-fake-0001",
+            "fullName": "Fake Climber",
+            "avatarPath": "https://example.invalid/avatars/fake-one.png"
+          }
+        },
+        {
+          "tickType": 1,
+          "tickedFirstAtDate": "2026-09-01",
+          "user": { "id": "usr-fake-0002", "fullName": "Another Fake Person" }
+        },
+        {
+          "tickType": 0,
+          "tickedFirstAtDate": "2026-09-02",
+          "user": { "id": "usr-fake-0003", "fullName": "Third Fake Human" }
+        }
+      ]
+    },
+    {
+      "data": [
+        {
+          "tickType": 2,
+          "tickedFirstAtDate": "2026-09-02",
+          "user": { "id": "usr-fake-0001", "fullName": "Fake Climber" }
+        },
+        {
+          "tickType": 1,
+          "tickedFirstAtDate": "2026-09-03T08:15:00Z",
+          "user": { "id": "usr-fake-0002", "fullName": "Another Fake Person" }
+        }
+      ]
+    }
+  ]
+}

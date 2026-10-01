@@ -28,14 +28,18 @@ test it quickly".
 
 ## Status
 
-Roadmap **Phase 0 is done**: uv project, ruff, pytest, `config.py`, the `Source` protocol and
-the package skeleton. Phase 1 (auth module) is next and has not been started.
+Roadmap **Phases 0–2 are done**: project skeleton and config; the refresh-token auth flow
+and GraphQL transport; and raw ingestion — a `Source` adapter for TopLogger plus
+`uv run python -m ingest catalog|stats|toppers|me|all|probe`, all verified against the live
+API on 2026-09-23. Phase 3 (normalise and load into SQLite) is next and has not been
+started; there is no `schema.sql` yet.
 
 `AGENTS.md` is the working contract — layout, conventions, and "ask before" list. It repeats
 the hard rules above; if the two ever drift, this file wins on rules.
-`docs/PROJECT_CONTEXT.md` (facts about the data) and `docs/ROADMAP.md` (phases, each with a
-"done when") are the source of truth; read them before starting and update them when a fact
-or decision changes.
+`docs/PROJECT_CONTEXT.md` (facts about the data), `docs/ROADMAP.md` (phases, each with a
+"done when") and `docs/ARCHITECTURE.md` (the layer boundaries and why they are where they
+are) are the source of truth; read them before starting and update them when a fact,
+decision or boundary changes. `docs/RUNBOOK.md` covers running a sync.
 
 ## Commands
 

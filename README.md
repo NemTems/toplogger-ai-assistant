@@ -4,7 +4,9 @@ A personal bouldering assistant over [TopLogger](https://toplogger.nu) data. It 
 questions like "which styles am I weak on", "is the gym stiff", "what should I project", and
 "what's about to be stripped", built as an AI-engineering portfolio project (agents,
 RAG/Graph RAG, guardrails, prompt versioning, cost/latency work). See `docs/PROJECT_CONTEXT.md`
-for what is known about the data and `docs/ROADMAP.md` for the phased implementation plan.
+for what is known about the data, `docs/ROADMAP.md` for the phased implementation plan, and
+`docs/ARCHITECTURE.md` for how the layers fit together, and `docs/RUNBOOK.md` for how to
+actually run a data sync.
 
 ## Development
 
@@ -26,6 +28,13 @@ Run the test suite:
 
 ```
 uv run pytest
+```
+
+Pull data (see `docs/RUNBOOK.md` for the full first-run order and scheduling):
+
+```
+uv run python -m ingest --help
+uv run python -m ingest catalog --dry-run
 ```
 
 Run a single test:

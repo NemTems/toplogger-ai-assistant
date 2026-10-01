@@ -1,0 +1,36 @@
+# Selection set for `climbDays(userId:, gymIdNotNull:, ...)` — the authenticated
+# user's own sessions. Requires auth; about the configured user only.
+#
+# `(__ARGS__)` is substituted by adapter.py with the rendered `climbUserDays`
+# arguments. It is a nested field, so its arguments cannot go through the
+# document builder that handles the top-level ones.
+#
+# §6.2, answered live 2026-09-23: `limit:` is honoured well above the web app's 10
+# (297 ticks at 10 vs 391 at 100 over the same window). It stays a parameter of
+# `fetch_user_history` rather than a constant here, so the next person can re-measure.
+#
+# Note §2 writes this selection directly on `climbDays`, with no `data { ... }`
+# wrapper — unlike `climbs` and `climbUsers`. Reproduced as captured.
+
+  statsAtDate
+  bouldersGrade
+  bouldersRpGrade
+  bouldersFlGrade
+  climbUserDays(__ARGS__) {
+    tickType
+    wasRepeat
+    climb {
+      id
+      grade
+      inAt
+      outAt # §3: climbs already stripped carry this in the user's history
+      wall {
+        id
+        nameLoc
+      }
+      holdColor {
+        id
+        color
+      }
+    }
+  }

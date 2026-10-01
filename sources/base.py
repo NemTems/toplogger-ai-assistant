@@ -38,12 +38,34 @@ class Source(Protocol):
         ...
 
     def fetch_catalog(self) -> RawPayload:
-        """Return the climbs currently set on the wall, plus gym metadata needed
-        to make sense of them (walls, hold colours, setters, climb groups, tags).
+        """Return the climbs currently set on the wall.
 
         Public data. Reflects the *current* state of the wall only; a history of
         what was on the wall on past dates comes from diffing repeated snapshots,
         not from this call.
+
+        The vocabulary needed to read these climbs — wall names, hold colour names,
+        setters — comes from :meth:`fetch_gym_metadata`, which is a separate call.
+        """
+        ...
+
+    def fetch_gym_metadata(self) -> RawPayload:
+        """Return the gym's vocabulary: walls, hold colours, setters, climb groups
+        and the tag taxonomy.
+
+        Public data, and slow-changing — but it is what turns a catalog row into
+        something a human can find on the wall ("Purple · Mad Rock"), so it is
+        snapshotted alongside the catalog rather than assumed constant.
+        """
+        ...
+
+    def climb_ids(self, catalog: RawPayload) -> list[str]:
+        """Pull the climb identifiers out of a catalog payload this source produced.
+
+        The one concession to provider shape that callers need: `ingest/` reads a
+        stored catalog snapshot to decide which climbs to fetch stats and popularity
+        for, and it must do that without learning a single provider field name. Ask
+        the source that made the payload to read it back.
         """
         ...
 
@@ -71,5 +93,17 @@ class Source(Protocol):
 
         Requires authentication. Returns data about `user_id` only — never about
         other climbers.
+        """
+        ...
+
+    def fetch_user_stats(self, user_id: str) -> RawPayload:
+        """Return the provider's own aggregate view of this user: how their sends
+        are distributed across grades, and how that has moved over time.
+
+        Distinct from :meth:`fetch_user_history`, which is the per-climb record.
+        This is the provider's summary of it, kept because it is a useful
+        cross-check on anything we derive ourselves.
+
+        Requires authentication. About `user_id` only.
         """
         ...

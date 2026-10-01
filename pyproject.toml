@@ -9,6 +9,7 @@ dependencies = [
     "pydantic",
     "pydantic-settings",
     "keyring",
+    "typer",
 ]
 
 [dependency-groups]

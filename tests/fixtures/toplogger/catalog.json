@@ -1,0 +1,69 @@
+{
+  "_note": [
+    "Hand-written, NOT a recording. A three-row `climbs` payload shaped like the one",
+    "queries/catalog.graphql asks for, trimmed to the fields the tests touch.",
+    "Setter names are the one person-level field hard rule 4 permits, and these are",
+    "invented anyway. Grades follow §3: Font x100 with sixths, 0 meaning ungraded."
+  ],
+  "data": [
+    {
+      "id": "clmb-aaa",
+      "grade": 633,
+      "gradeAuto": true,
+      "gradeTicks": 783,
+      "ticksCount": 26,
+      "ticksCountLabel": "soft",
+      "ratingsAverage": 75,
+      "commentsCount": 2,
+      "inAt": "2026-08-31T00:00:00Z",
+      "outPlannedAt": "2026-11-30T00:00:00Z",
+      "picPath": "climbs/fake-aaa.jpg",
+      "videoPath": null,
+      "wall": { "id": "wall-1", "nameLoc": "Mad Rock" },
+      "holdColor": { "id": "hc-1", "color": "#8e44ad" },
+      "climbSetters": [{ "gymAdmin": { "id": "adm-1", "name": "Fake Setter" } }],
+      "climbTagClimbs": [
+        {
+          "communitySuggestion": false,
+          "climbTag": { "nameLoc": "Slopers", "type": "HOLD" }
+        }
+      ]
+    },
+    {
+      "id": "clmb-bbb",
+      "grade": 700,
+      "gradeAuto": false,
+      "gradeTicks": 783,
+      "ticksCount": 7,
+      "ticksCountLabel": "hard",
+      "ratingsAverage": 50,
+      "commentsCount": 0,
+      "inAt": "2026-08-31T00:00:00Z",
+      "outPlannedAt": null,
+      "picPath": null,
+      "videoPath": null,
+      "wall": { "id": "wall-2", "nameLoc": "The Cave" },
+      "holdColor": { "id": "hc-2", "color": "#16a085" },
+      "climbSetters": [{ "gymAdmin": { "id": "adm-2", "name": "Guest Setter" } }],
+      "climbTagClimbs": []
+    },
+    {
+      "id": "clmb-ccc",
+      "grade": 0,
+      "gradeAuto": false,
+      "gradeTicks": 783,
+      "ticksCount": 0,
+      "ticksCountLabel": null,
+      "ratingsAverage": null,
+      "commentsCount": 0,
+      "inAt": "2026-09-20T00:00:00Z",
+      "outPlannedAt": null,
+      "picPath": null,
+      "videoPath": null,
+      "wall": { "id": "wall-1", "nameLoc": "Mad Rock" },
+      "holdColor": { "id": "hc-3", "color": "#e74c3c" },
+      "climbSetters": [],
+      "climbTagClimbs": []
+    }
+  ]
+}
