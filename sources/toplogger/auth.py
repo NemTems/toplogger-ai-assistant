@@ -6,14 +6,13 @@ The flow (docs/PROJECT_CONTEXT.md §1):
   token plus a **brand-new refresh token**. The token just sent is dead.
 * So every call rotates the stored credential, and the new one must be persisted
   *before anything else* — a crash between the API call and the write leaves a dead
-  token behind and costs a manual browser login (AGENTS.md hard rule 3).
+  token behind and costs a manual browser login.
 
 Storage: the OS keychain via ``keyring``. As a one-time bootstrap, a refresh token
 may be pasted into ``.env`` as ``TOPLOGGER_REFRESH_TOKEN``; the first run imports it
 into the keychain and tells you to delete the line. ``.env`` is never written to.
 
-``authSignin`` is never called from here. It needs a reCAPTCHA and is manual-only
-(hard rule 2).
+``authSignin`` is never called from here. It needs a reCAPTCHA and is manual-only.
 """
 
 from __future__ import annotations
@@ -51,8 +50,8 @@ KEYRING_USERNAME = "refresh_token"
 
 _QUERY_PATH = Path(__file__).parent / "queries" / "auth_signin_refresh_token.graphql"
 
-# On the refresh mutation specifically, an auth error means "this refresh token is
-# no longer good" — the same codes the adapter reads as "this endpoint needs a token".
+# On the refresh mutation, these codes mean the refresh token is dead — the same
+# codes the adapter reads as "this endpoint needs a token".
 _DEAD_TOKEN_CODES = AUTH_ERROR_CODES
 
 _MANUAL_LOGIN_INSTRUCTIONS = (
@@ -80,8 +79,8 @@ class RefreshTokenRotationFailed(AuthError):
     """A new refresh token was issued but could not be stored.
 
     The worst case this module has: the old token is now dead and the new one was
-    not saved, so the next run has nothing to use. Raised loudly with recovery
-    instructions rather than swallowed.
+    not saved, so the next run has nothing to use. The message carries recovery
+    instructions.
     """
 
 
@@ -92,9 +91,9 @@ class SyncAlreadyRunning(AuthError):
 class _Bootstrap(BaseSettings):
     """Reads ``TOPLOGGER_REFRESH_TOKEN`` from the environment or ``.env``.
 
-    Kept separate from ``config.Settings`` on purpose: ``Settings`` must stay
-    credential-free so its ``repr`` can never leak one (there is a test asserting
-    exactly that). This class exists only for the one-time import into the keychain.
+    Separate from ``config.Settings``, which must stay credential-free so its ``repr``
+    can never leak one (a test asserts this). Used only for the one-time import into
+    the keychain.
     """
 
     model_config = SettingsConfigDict(
@@ -106,19 +105,19 @@ class _Bootstrap(BaseSettings):
     refresh_token: SecretStr | None = None
 
 
-# Re-entrancy: Phase 2 wraps a whole sync in sync_lock(), and get_access_token()
-# acquires it again from inside. flock() on a second file object in the same process
-# would not block, but the bookkeeping would be wrong, so track depth explicitly.
+# Re-entrancy: a sync runs inside sync_lock(), and get_access_token() acquires it
+# again from inside. Nesting depth is tracked per thread; only the outermost entry
+# takes and releases the flock.
 _lock_state = threading.local()
 _lock_guard = threading.Lock()
 
 
 @contextmanager
 def sync_lock(lock_path: Path | None = None):
-    """Hold an exclusive lock for the duration of a sync (hard rule 3).
+    """Hold an exclusive lock for the duration of a sync, so two syncs never overlap.
 
     Re-entrant within a process; a second *process* fails fast with
-    :class:`SyncAlreadyRunning` rather than queueing up behind the first.
+    :class:`SyncAlreadyRunning`.
 
     POSIX only — ``fcntl.flock`` does not exist on Windows.
     """
@@ -213,18 +212,16 @@ def _refresh(refresh_token: SecretStr, **post_kwargs: Any) -> dict[str, Any]:
     Sent with ``retry=False``: rotation is not idempotent. If TopLogger issues a new
     pair and the response is then lost to a timeout or a 5xx, a retry would send a
     token the server has already killed — burning the pair it just issued and
-    forcing a manual browser login (hard rule 3). Failing after one attempt is the
-    cheap outcome: a request that never reached the server leaves the stored token
-    intact, so re-running works.
+    forcing a manual browser login. A request that never reached the server leaves
+    the stored token intact, so re-running works.
     """
     query = _QUERY_PATH.read_text()
     try:
         data = post_graphql(
             query,
             {"refreshToken": refresh_token.get_secret_value()},
-            # The web app sends the refresh token in both places. Whether the header
-            # is needed at all is open question 6 in docs/PROJECT_CONTEXT.md §6 —
-            # this mirrors the known-working shape rather than guessing.
+            # The web app sends the refresh token as both variable and bearer. Whether
+            # the header is needed is open question 6 in docs/PROJECT_CONTEXT.md §6.
             bearer=refresh_token,
             retry=False,
             **post_kwargs,
@@ -263,10 +260,9 @@ def get_access_token(**post_kwargs: Any) -> SecretStr:
         try:
             tokens = _refresh(current, **post_kwargs)
         except RefreshTokenExpired:
-            # The keychain copy takes precedence over .env, which is right in normal
-            # operation but traps you after a failed run: pasting a fresh token into
-            # .env would have no effect while a dead one sits in the keychain. If
-            # .env offers a *different* token, that is a deliberate act — use it.
+            # The keychain copy normally takes precedence over .env, so a dead one there
+            # would hide a fresh token pasted into .env. Fall back to .env when it
+            # holds a *different* token.
             fallback = _bootstrap_token()
             if fallback is None or fallback.get_secret_value() == current.get_secret_value():
                 raise

@@ -6,10 +6,9 @@ is, or that TopLogger exists — it calls protocol methods and hands the results
 ``toppers`` need the climb IDs from the newest catalog snapshot), the source that
 produced it is asked to read it, via ``Source.climb_ids``.
 
-Ordering matters: ``stats`` and ``toppers`` deliberately take their climb IDs from
-the stored catalog rather than from a fresh fetch. Loaders read raw files only
-(AGENTS.md), and pinning all three of a day's snapshots to the same catalog keeps
-them describing the same wall even if a climb is stripped mid-sync.
+Ordering matters: ``stats`` and ``toppers`` take their climb IDs from the newest
+stored catalog snapshot, so a day's snapshots describe the same wall even if a climb
+is stripped mid-sync. Run ``catalog`` first.
 """
 
 from __future__ import annotations
@@ -80,9 +79,8 @@ def sync_catalog(
 ) -> SyncReport:
     """Snapshot the current wall: the climbs on it and the gym's vocabulary.
 
-    Two files, not one. The catalog changes daily; walls, hold colours and setters
-    barely change at all — but a catalog row is unreadable without them, so a
-    snapshot that cannot be interpreted on its own is not a snapshot.
+    Writes two files, ``catalog`` and ``gym``: a catalog row is unreadable without
+    the gym's walls, hold colours and setters.
     """
     if dry_run:
         return SyncReport(kind="catalog", planned=("fetch_catalog", "fetch_gym_metadata"))
@@ -136,8 +134,8 @@ def sync_stats(
 ) -> SyncReport:
     """Snapshot per-climb grade and rating vote histograms.
 
-    Public data, batched: the source is handed every climb ID at once and decides
-    how to chunk them (hard rule 5 says batch, and it is the source that knows how).
+    The source is handed every climb ID at once and chunks them into batched
+    requests.
     """
     if dry_run:
         return SyncReport(kind="stats", planned=("read latest catalog", "fetch_climb_stats"))
@@ -164,10 +162,9 @@ def sync_toppers(
 ) -> SyncReport:
     """Snapshot per-climb flash/redpoint counts.
 
-    Written with ``aggregated=True``: this is the one kind where "raw is immutable,
-    saved untouched" does not hold. The upstream response carries other climbers'
-    names and user IDs, and hard rule 4 outranks the convention — the source
-    aggregates in memory and only counts ever reach this function.
+    Written with ``aggregated=True``. The upstream response carries other climbers'
+    names and user IDs, so the source aggregates in memory and only counts reach
+    this function.
     """
     if dry_run:
         return SyncReport(kind="toppers", planned=("read latest catalog", "fetch_climb_popularity"))

@@ -1,0 +1,22 @@
+# Secret scan, and no data/ or .env in commits.
+# Activate once per clone: `uv run pre-commit install`.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  - repo: local
+    hooks:
+      - id: no-data-dir
+        name: Block data/ (hard rule 7)
+        entry: "Hard rule 7: never commit data/ -- raw and processed data stay local. Unstage these paths:"
+        language: fail
+        files: ^data/
+        types: []  # match any path, incl. symlinks, not just regular files
+      - id: no-dotenv
+        name: Block .env (hard rule 1)
+        entry: "Hard rule 1: never commit .env -- it may hold a bootstrap refresh token. Only .env.example belongs in git. Unstage:"
+        language: fail
+        files: (^|/)\.env$
+        types: []

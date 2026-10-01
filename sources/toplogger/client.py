@@ -1,12 +1,13 @@
-"""GraphQL transport for TopLogger: rate limiting, retries and error mapping.
-
-Deliberately thin. Phase 2 extends this with request batching and aliases
-(``c1: climb(...) c2: climb(...)``); Phase 1 only needs a single mutation.
+"""GraphQL transport for TopLogger: rate limiting, retries, alias batching and error
+mapping.
 
 Nothing in this module may emit a token. Request headers and response bodies both
 carry credentials, so error types here carry status codes and GraphQL error codes
-only, and every string that escapes is passed through :func:`redact` (AGENTS.md
-hard rule 1).
+only, and every string that escapes is passed through :func:`redact`.
+
+Nothing in this module may send an operation it was not told about, either. Every
+document is checked against :data:`ALLOWED_OPERATIONS` before the throttle or the
+socket is touched, so `authSignin` can never be sent.
 """
 
 from __future__ import annotations
@@ -23,11 +24,15 @@ from pydantic import SecretStr
 from config import get_settings
 
 __all__ = [
+    "ALLOWED_OPERATIONS",
     "AUTH_ERROR_CODES",
+    "FORBIDDEN_FIELDS",
+    "ForbiddenOperationError",
     "GraphQLError",
     "TopLoggerError",
     "TransportError",
     "build_aliased_query",
+    "check_operation",
     "looks_like_jwt",
     "post_aliased",
     "post_graphql",
@@ -43,19 +48,17 @@ AUTH_ERROR_CODES = frozenset({"UNAUTHENTICATED", "UNAUTHORIZED", "FORBIDDEN"})
 # base64url-encoded `{"` and essentially never occurs by accident.
 _JWT_SHAPED = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+){0,2}")
 
-# For redaction we also swallow any long opaque run that *could* be a token.
-# Deliberately broad: a false positive costs a less readable error message, a false
-# negative leaks a credential into a log. Too broad to assert on, though — see
-# :func:`looks_like_jwt`.
+# For redaction we also swallow any long opaque run that *could* be a token, so this
+# over-matches. Too broad to assert on — see :func:`looks_like_jwt`.
 _TOKEN_SHAPED = re.compile(f"{_JWT_SHAPED.pattern}|[A-Za-z0-9_-]{{40,}}")
 
 
 def looks_like_jwt(text: str) -> bool:
     """True if ``text`` contains something JWT-shaped.
 
-    The precise half of :func:`redact`'s pattern, for callers that must *refuse*
-    rather than rewrite — writing a raw data file, say, where a mangled payload is
-    worse than a loud failure and a long ``picPath`` must not read as a credential.
+    The precise half of :func:`redact`'s pattern, for callers that *refuse* on a
+    match, e.g. before writing a raw data file. A long opaque value such as a
+    ``picPath`` does not match.
     """
     return _JWT_SHAPED.search(text) is not None
 
@@ -108,9 +111,171 @@ class GraphQLError(TopLoggerError):
         super().__init__(f"GraphQL error {self.codes or ['<no code>']}: {detail}")
 
 
-# Rate limiting is process-wide: one lock, one clock. Hard rule 5 caps us at
-# 1 request/second and forbids parallel crawling, so serialising here is the point,
-# not a limitation.
+class ForbiddenOperationError(TopLoggerError):
+    """A document failed the operation allowlist and was never sent.
+
+    Raised before throttling, so a refused document costs no request and leaves the
+    rate limiter's clock alone. The message names the operation at most — never the
+    document body or its variables, either of which can carry a token.
+    """
+
+
+# --- operation allowlist ---------------------------------------------------
+#
+# Auth only ever goes through `authSigninRefreshToken`, never `authSignin` (which
+# needs a reCAPTCHA and so is manual-only). Every request passes through
+# `post_graphql`, which refuses any document not declared here.
+#
+# Pairs, not bare names, so an allowlisted name cannot change kind: `Catalog` is a
+# query and may only ever be sent as one. The single mutation is the refresh.
+# Adding a line here adds a TopLogger operation.
+ALLOWED_OPERATIONS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("mutation", "AuthSigninRefreshToken"),  # auth._refresh
+        ("query", "Catalog"),  # TopLoggerSource.fetch_catalog
+        ("query", "GymMetadata"),  # TopLoggerSource.fetch_gym_metadata
+        ("query", "ClimbStats"),  # TopLoggerSource.fetch_climb_stats, aliased
+        ("query", "ClimbUsers"),  # TopLoggerSource._fetch_toppers
+        ("query", "UserHistory"),  # TopLoggerSource.fetch_user_history
+        ("query", "UserStats"),  # TopLoggerSource.fetch_user_stats
+        # TopLoggerSource.probe_selection: a selection that fails validation, whose
+        # error names a type's fields. Its selection is caller-supplied, so the
+        # field check below applies regardless of the name.
+        ("query", "Probe"),
+    }
+)
+
+# Names refused anywhere in a document, whatever the operation is called. Checked
+# independently of the allowlist, which alone would pass
+# `query Probe { authSignin { ... } }`.
+FORBIDDEN_FIELDS: frozenset[str] = frozenset({"authSignin"})
+
+# A minimal GraphQL lexer: just enough to find the operation head and every name
+# token with comments and string literals out of the way. Comments matter because
+# queries/auth_signin_refresh_token.graphql is sent verbatim and its comment says
+# "never paired with `authSignin`"; strings matter because a `{` inside one must not
+# move the brace depth. Anything this cannot tokenise is refused, not guessed at.
+_GRAPHQL_TOKEN = re.compile(
+    r"""
+    (?P<ignored>[\s,\ufeff]+|\#[^\n\r]*)
+    | (?P<string>\"\"\"(?:\\\"\"\"|[^"]|"(?!""))*\"\"\"|"(?:\\.|[^"\\\n\r])*")
+    | (?P<name>[_A-Za-z][_0-9A-Za-z]*)
+    | (?P<number>-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)
+    | (?P<punct>\.\.\.|[!$&():=@\[\]{|}])
+    """,
+    re.VERBOSE,
+)
+
+_OPERATION_TYPES = frozenset({"query", "mutation", "subscription"})
+_CLOSERS = {"{": "}", "(": ")", "[": "]"}
+
+
+def _tokenize(document: str) -> list[tuple[str, str]]:
+    """Return the ``(kind, text)`` name and punctuator tokens of ``document``.
+
+    Comments, whitespace, commas, strings and numbers are dropped: none of them can
+    name an operation or select a field.
+    """
+    tokens: list[tuple[str, str]] = []
+    pos = 0
+    while pos < len(document):
+        match = _GRAPHQL_TOKEN.match(document, pos)
+        if match is None:
+            # The offset, not the text: the text could be anything, a token included.
+            raise ForbiddenOperationError(
+                f"refusing to send a document that does not tokenise (offset {pos})"
+            )
+        if match.lastgroup in ("name", "punct"):
+            tokens.append((match.lastgroup, match.group()))
+        pos = match.end()
+    return tokens
+
+
+def _definition_heads(tokens: list[tuple[str, str]]) -> list[list[tuple[str, str]]]:
+    """Split a token stream into top-level definitions, keeping only each one's head.
+
+    The head is everything at depth 0 — ``query Name ( @dir {`` — which is all the
+    allowlist needs. A definition ends when a ``}`` brings the depth back to 0;
+    brackets are tracked together so an object default inside a variable list
+    cannot end a definition early. Unbalanced input is refused.
+    """
+    heads: list[list[tuple[str, str]]] = []
+    current: list[tuple[str, str]] | None = None
+    stack: list[str] = []
+    for kind, text in tokens:
+        if not stack:
+            if current is None:
+                current = []
+                heads.append(current)
+            current.append((kind, text))
+        if text in _CLOSERS:
+            stack.append(_CLOSERS[text])
+        elif text in _CLOSERS.values():
+            if not stack or stack.pop() != text:
+                raise ForbiddenOperationError(
+                    "refusing to send a document with unbalanced brackets"
+                )
+            if not stack and text == "}":
+                current = None
+    if stack or current is not None:
+        raise ForbiddenOperationError("refusing to send an incomplete document")
+    return heads
+
+
+def check_operation(document: str) -> tuple[str, str]:
+    """Return ``(operation_type, name)`` if ``document`` may be sent, else raise.
+
+    A document may be sent only if it holds exactly one definition, that definition
+    is a *named* operation listed in :data:`ALLOWED_OPERATIONS` with the same type,
+    and no name token anywhere in it is in :data:`FORBIDDEN_FIELDS`.
+
+    Anonymous operations, multi-operation documents (the server would pick which
+    one runs from ``operationName``, which is never sent) and fragments are refused.
+
+    Raises:
+        ForbiddenOperationError: The document fails any of the above. Raised before
+            anything is sent; the message never quotes the document body.
+    """
+    tokens = _tokenize(document)
+
+    # Checked first, regardless of operation name. A whole-token match, so
+    # `authSigninRefreshToken` is a different name and passes. It also catches the
+    # name used as an alias, argument or enum value.
+    forbidden = sorted(FORBIDDEN_FIELDS.intersection(t for k, t in tokens if k == "name"))
+    if forbidden:
+        raise ForbiddenOperationError(
+            f"refusing to send a document that references {', '.join(forbidden)} "
+            "(CLAUDE.md hard rule 2: login is manual-only)"
+        )
+
+    heads = _definition_heads(tokens)
+    if len(heads) != 1:
+        raise ForbiddenOperationError(
+            f"refusing to send a document with {len(heads)} definitions; exactly one "
+            "named operation is allowed"
+        )
+
+    head = heads[0]
+    op_type = head[0][1]
+    if op_type == "{":
+        raise ForbiddenOperationError("refusing to send an anonymous query shorthand")
+    if op_type not in _OPERATION_TYPES:
+        raise ForbiddenOperationError(
+            "refusing to send a document whose definition is not an operation"
+        )
+    if len(head) < 2 or head[1][0] != "name":
+        raise ForbiddenOperationError(f"refusing to send an anonymous {op_type}")
+
+    name = head[1][1]
+    if (op_type, name) not in ALLOWED_OPERATIONS:
+        raise ForbiddenOperationError(
+            f"refusing to send {op_type} {redact(name)}: not in ALLOWED_OPERATIONS"
+        )
+    return op_type, name
+
+
+# Rate limiting is process-wide: one lock, one clock, so every request in the
+# process is serialised and spaced, however many clients there are.
 _rate_lock = threading.Lock()
 _last_request_at: float | None = None
 
@@ -153,7 +318,8 @@ def post_graphql(
     """POST one GraphQL operation and return its ``data`` object.
 
     Args:
-        query: The GraphQL document.
+        query: The GraphQL document. Must hold exactly one named operation from
+            :data:`ALLOWED_OPERATIONS`; see :func:`check_operation`.
         variables: Operation variables, if any.
         bearer: Token for the ``Authorization`` header. Never logged.
         secrets: Credentials this request carries besides ``bearer`` (e.g. a token
@@ -161,14 +327,21 @@ def post_graphql(
         retry: ``False`` for a non-idempotent operation, where replaying a request
             whose response was lost does real damage — refresh-token rotation
             being the case that matters here. The call then fails after one
-            attempt instead of retrying transient errors.
-        client: An ``httpx.Client`` to use instead of creating one. Tests pass a
-            client built on ``httpx.MockTransport``; nothing else should pass this.
+            attempt, transient errors included.
+        client: An ``httpx.Client`` to use; one is created per call if omitted.
+            Tests pass a client built on ``httpx.MockTransport``; nothing else
+            should pass this.
 
     Raises:
+        ForbiddenOperationError: ``query`` failed :func:`check_operation`. Nothing
+            was sent and the rate limiter was not touched.
         TransportError: HTTP-level failure that survived the configured retries.
         GraphQLError: The response carried a GraphQL ``errors`` array.
     """
+    # First, before settings, headers or the throttle: a refused document costs no
+    # request and leaves the rate limiter untouched.
+    check_operation(query)
+
     settings = get_settings()
     headers = {"Content-Type": "application/json"}
     if bearer is not None:
@@ -208,8 +381,8 @@ def post_graphql(
                 )
 
             if response.status_code >= 400:
-                # A 4xx is a request we got wrong, or a dead credential. Retrying
-                # burns requests against a rate limit for no possible gain.
+                # A 4xx is a malformed request or a dead credential; a retry would
+                # fail the same way, so it is never retried.
                 raise TransportError(
                     f"TopLogger returned {response.status_code}"
                     f"{_body_excerpt(response, all_secrets)}"
@@ -232,9 +405,8 @@ def _body_excerpt(response: httpx.Response, secrets: Sequence[SecretStr | str]) 
     """Return a short, redacted slice of an error response body, or ``""``.
 
     A 4xx from a GraphQL endpoint carries the reason — an unknown field, an argument
-    of the wrong type — and dropping it turns a precise complaint into a bare number.
-    It is also the only way to read a schema here, since introspection is disabled
-    and a malformed query is answered with 400 rather than a 200 carrying ``errors``.
+    of the wrong type. TopLogger answers a query that fails validation with 400, not
+    a 200 carrying ``errors``, so this excerpt is where validation messages appear.
 
     The body is untrusted and may echo the request, so it is truncated and passed
     through :func:`redact` with the credentials this request carried.
@@ -268,10 +440,9 @@ def _parse(
 
     if not isinstance(body, dict):
         if isinstance(body, list):
-            # Batched responses are a Phase 2 concern; reject rather than guess.
+            # Only single operations are sent, so a JSON-array response is unexpected.
             raise TransportError("unexpected batched response for a single operation")
-        # A bare JSON scalar is not a GraphQL response; say so instead of
-        # tripping over AttributeError below.
+        # A bare JSON scalar is not a GraphQL response.
         raise TransportError(f"TopLogger returned an unexpected JSON body ({type(body).__name__})")
 
     errors = body.get("errors") or []
@@ -292,17 +463,12 @@ def _parse(
 
 # --- alias batching --------------------------------------------------------
 #
-# Hard rule 5 says batch. TopLogger's endpoint accepts GraphQL aliases, so one
-# document can ask for many climbs at once: `c0: climb(id: "a") {...} c1: ...`.
-# That is a single operation, so the JSON-array response `_parse` rejects stays
-# rejected — batching here never produces one.
+# TopLogger's endpoint accepts GraphQL aliases, so one document can ask for many
+# climbs at once: `c0: climb(id: "a") {...} c1: ...`. That is a single operation,
+# so the response is never the JSON array `_parse` rejects.
 #
-# IDs go in as *literals*, not variables. Introspection is disabled
-# (docs/PROJECT_CONTEXT.md §1), so we cannot know whether an argument is declared
-# `ID!` or `String!`, and a wrong variable type fails validation. A literal has no
-# declared type to get wrong. That makes input validation non-optional, hence
-# `_SAFE_LITERAL` below — an id is only ever echoed into a document after it has
-# been proven to be a bare identifier.
+# IDs and arguments are inlined as literals, so each must pass `_SAFE_LITERAL`
+# first.
 
 _SAFE_LITERAL = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 

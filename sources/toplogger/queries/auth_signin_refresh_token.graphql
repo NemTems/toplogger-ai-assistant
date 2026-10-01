@@ -5,7 +5,7 @@
 # persist `refresh.token` before doing anything else.
 #
 # Never paired with `authSignin`, which needs a reCAPTCHA and is manual-only
-# (AGENTS.md hard rule 2).
+# (CLAUDE.md hard rule 2).
 
 mutation AuthSigninRefreshToken($refreshToken: JWT!) {
   authSigninRefreshToken(refreshToken: $refreshToken) {
