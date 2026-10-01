@@ -1,30 +1,20 @@
 """The on-disk contract for raw API responses.
 
 Every response is written here, untouched and dated, before anything parses it.
-Loaders (Phase 3), features and evals all read these files and never the live API,
-so a file written today has to still mean the same thing in six months: the payload
-is kept exactly as the provider sent it, and the envelope around it records where it
+Loaders, features and evals read these files and never the live API. The payload is
+kept exactly as the provider sent it, and the envelope around it records where it
 came from and when.
 
-Three properties this module is responsible for, in order of how badly they hurt
-when missing:
+* **No credentials on disk.** A write is refused if the serialised bytes look like
+  they carry a credential. Nothing is redacted: the payload is written verbatim or
+  not at all.
+* **Append-only.** A file is never overwritten. Two writes of the same kind in the
+  same second get a ``_NN`` suffix — see :func:`write_raw`.
+* **Atomic.** A killed run leaves no half-written file.
 
-* **No credentials on disk.** A raw dump is the one place a token could be written
-  without anyone noticing — it goes straight from an HTTP response to a file. Every
-  write is refused outright if the serialised bytes look like they carry one
-  (AGENTS.md hard rule 1). Refusing, not redacting: a rewritten payload is a
-  corrupted recording that looks fine.
-* **Append-only.** A file is never overwritten, so a snapshot series can be trusted
-  as history. Two writes of the same kind in the same second are disambiguated with
-  a ``_NN`` suffix rather than one of them being lost — see :func:`write_raw`.
-* **Atomic.** A killed run must not leave a half-written file that a loader will
-  happily read as truth.
-
-``aggregated=True`` marks the one kind where "saved untouched" does *not* hold.
-Topper data names other climbers, so it is aggregated into per-climb counts in
-memory and only the counts are written (hard rule 4, which outranks the
-raw-is-immutable convention). The flag is in the envelope so a reader of the file
-does not have to know that from somewhere else.
+``aggregated=True`` marks the one kind not saved untouched. Topper data names other
+climbers, so it is aggregated into per-climb counts in memory and only the counts
+are written. The flag is in the envelope so a reader of the file can tell.
 """
 
 from __future__ import annotations
@@ -53,15 +43,13 @@ __all__ = [
 ]
 
 RAW_TIMESTAMP_FORMAT = "%Y-%m-%dT%H%M%SZ"
-"""UTC stamp naming a raw file. Chosen so lexicographic order is chronological."""
+"""UTC stamp naming a raw file. Lexicographic order is chronological."""
 
-# `kind` and `source` become directory names. They are ours, not the API's, but a
-# path segment assembled from a variable is worth checking anyway.
+# `kind` and `source` become directory names.
 _SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
-# Below this length a "secret" is more likely a sentinel than a credential, and
-# searching for it would refuse writes over a coincidence. Mirrors the floor in
-# client.redact.
+# Forbidden values shorter than this are not searched for: they are likely sentinels,
+# not credentials, and would refuse writes by coincidence. Same floor as client.redact.
 _MIN_FORBIDDEN_LENGTH = 8
 
 # Same-second writes get `_01`.. appended. Two digits keeps them sorting after the
@@ -93,9 +81,8 @@ def write_raw(
 
     Nothing is ever overwritten. If that path is already taken, because two writes of
     the same kind landed in the same second, the second one becomes
-    ``...Z_01.json``, then ``_02``, and so on: losing a response we already paid a
-    request for is worse than a slightly uglier name, and the suffix still sorts
-    after the bare name, so :func:`latest_raw` stays correct.
+    ``...Z_01.json``, then ``_02``, and so on. The suffix sorts after the bare name,
+    so :func:`latest_raw` stays correct.
 
     Args:
         kind: What was fetched — ``"catalog"``, ``"gym"``, ``"stats"``, ``"toppers"``,
@@ -193,9 +180,8 @@ def _refuse_credentials(
 ) -> None:
     """Raise :class:`RawWriteRefused` if ``text`` looks like it carries a credential.
 
-    Deliberately not ``client.redact``: this is a recording, so a payload quietly
-    rewritten to say ``<REDACTED>`` is worse than a loud failure, and redact's
-    "40+ opaque characters" rule would fire on a long ``picPath`` segment.
+    Does not use ``client.redact``: its "40+ opaque characters" rule would fire on a
+    long ``picPath`` segment.
     """
     if looks_like_jwt(text):
         raise RawWriteRefused(
@@ -214,9 +200,8 @@ def _refuse_credentials(
 def _atomic_write(target: Path, text: str) -> None:
     """Write ``text`` to ``target`` in one step, leaving nothing behind on failure.
 
-    A loader may run against this directory at any time, so a reader must see either
-    no file or the whole file — never a truncated one that parses as valid JSON up to
-    the point the process died.
+    A loader may run against this directory at any time, so a reader sees either no
+    file or the whole file.
     """
     fd, name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.stem}-", suffix=".tmp")
     temp = Path(name)
@@ -265,5 +250,5 @@ def _as_utc(moment: datetime) -> datetime:
 
 
 def _isoformat(moment: datetime) -> str:
-    """ISO-8601 in UTC, with ``Z`` rather than ``+00:00``."""
+    """ISO-8601 in UTC with a ``Z`` suffix."""
     return moment.isoformat().replace("+00:00", "Z")

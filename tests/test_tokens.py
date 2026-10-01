@@ -1,8 +1,8 @@
 """Tests for the cached access-token provider.
 
 The keychain is a dict and HTTP is ``httpx.MockTransport``; nothing touches the real
-keychain or the network (hard rule 6). Fixture tokens are deliberately not
-JWT-shaped — see ``tests/test_auth.py``.
+keychain or the network. Fixture tokens are not JWT-shaped; see
+``tests/test_auth.py``.
 """
 
 from collections.abc import Callable
@@ -82,7 +82,7 @@ def test_returns_the_access_token():
 
 
 def test_many_gets_acquire_exactly_one_token():
-    """The whole point: a sync of hundreds of requests rotates the credential once."""
+    """A sync of hundreds of requests rotates the credential once."""
     calls: list[int] = []
     clock = FakeClock()
 
@@ -96,7 +96,7 @@ def test_many_gets_acquire_exactly_one_token():
 
 
 def test_one_acquisition_rotates_the_refresh_token_once(fake_keychain):
-    """Hard rule 3: every acquisition burns a refresh token, so count them."""
+    """Every acquisition burns a refresh token, so count them."""
     calls: list[int] = []
 
     with httpx.Client(transport=httpx.MockTransport(rotating_handler(calls))) as http:
@@ -178,7 +178,7 @@ def test_a_failed_acquisition_is_not_cached(fake_keychain):
 
 
 def test_provider_never_renders_the_token():
-    """Hard rule 1: not in repr, not in str."""
+    """Not in repr, not in str."""
     calls: list[int] = []
 
     with httpx.Client(transport=httpx.MockTransport(rotating_handler(calls))) as http:

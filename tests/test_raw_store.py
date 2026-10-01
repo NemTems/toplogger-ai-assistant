@@ -1,10 +1,9 @@
 """Tests for the raw-file store.
 
-Nothing here touches the network; the only I/O is into ``tmp_path`` (hard rule 6).
+Nothing here touches the network; the only I/O is into ``tmp_path``.
 
-The JWT used to prove the credential guard is assembled at runtime for the same
-reason ``tests/test_client.py`` does it: ``test_repo_hygiene.py`` scans tracked files
-for ``eyJ...`` and a hardcoded fake would train us to ignore that scan.
+The JWT used against the credential guard is assembled at runtime:
+``test_repo_hygiene.py`` fails on an ``eyJ...`` literal in any tracked file.
 """
 
 import base64
@@ -29,7 +28,7 @@ FAKE_SECRET = "fake-refresh-token-xyz"  # noqa: S105 - obviously fake, not a cre
 
 
 def fake_jwt() -> str:
-    """A JWT-shaped string built at runtime rather than written as a literal."""
+    """A JWT-shaped string built at runtime (see the module docstring)."""
     segments = [
         base64.urlsafe_b64encode(part).decode().rstrip("=")
         for part in (b'{"alg":"HS256"}', b'{"sub":"1"}')
@@ -109,7 +108,7 @@ def test_envelope_records_provenance(tmp_path):
 
 
 def test_payload_is_stored_untouched(tmp_path):
-    """The point of the store: what a loader reads back is what the API said."""
+    """What a loader reads back is what the API said."""
     payload = {
         "climbs": [
             {"id": "x1", "name": None, "grade": 617, "tags": ["slab", "crimp"]},
@@ -180,7 +179,7 @@ def test_refused_write_leaves_nothing_on_disk(tmp_path):
 
 
 def test_refusal_does_not_echo_the_secret(tmp_path):
-    """Hard rule 1: not even the error that caught it may carry the value."""
+    """Not even the error that caught it may carry the value."""
     with pytest.raises(RawWriteRefused) as excinfo:
         write_raw("me", {"t": FAKE_SECRET}, forbidden=[FAKE_SECRET], root=tmp_path, now=at())
 
@@ -189,10 +188,9 @@ def test_refusal_does_not_echo_the_secret(tmp_path):
 
 
 def test_long_opaque_field_is_not_mistaken_for_a_credential(tmp_path):
-    """Why the guard uses looks_like_jwt and not redact's broad token pattern.
+    """A media path, a long opaque run of base64-ish characters, is written as-is.
 
-    A media path is a long opaque run of base64-ish characters. Refusing it would
-    make the catalog unwritable.
+    Catalog payloads are full of them.
     """
     pic = "a1b2c3d4e5f6g7h8i9j0" * 4
 
@@ -240,13 +238,11 @@ def test_same_second_suffix_keeps_sorting_chronological(tmp_path):
 
 
 def test_the_suffix_separator_sorts_after_the_bare_stem(tmp_path):
-    """Why the counter is ``_01`` and not ``-1``.
+    """A ``_01``-suffixed name sorts after the bare one.
 
-    ``-`` (0x2D) sorts *before* ``.`` (0x2E), so ``...Z-2.json`` would compare older
-    than ``...Z.json`` and latest_raw would hand a loader the first write of the
-    second, silently, forever. ``_`` (0x5F) sorts after. This is the property the
-    whole name-ordering shortcut rests on, so assert it directly rather than
-    inferring it from a passing list_raw.
+    ``-`` (0x2D) sorts *before* ``.`` (0x2E), so a ``...Z-2.json`` suffix would compare
+    older than ``...Z.json`` and latest_raw would hand a loader the first write of the
+    second. ``_`` (0x5F) sorts after. latest_raw's name ordering depends on this.
     """
     first = write_raw("catalog", {"n": 1}, root=tmp_path, now=at())
     second = write_raw("catalog", {"n": 2}, root=tmp_path, now=at())

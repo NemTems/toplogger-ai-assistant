@@ -1,12 +1,13 @@
-"""GraphQL transport for TopLogger: rate limiting, retries and error mapping.
-
-Deliberately thin. Phase 2 extends this with request batching and aliases
-(``c1: climb(...) c2: climb(...)``); Phase 1 only needs a single mutation.
+"""GraphQL transport for TopLogger: rate limiting, retries, alias batching and error
+mapping.
 
 Nothing in this module may emit a token. Request headers and response bodies both
 carry credentials, so error types here carry status codes and GraphQL error codes
-only, and every string that escapes is passed through :func:`redact` (AGENTS.md
-hard rule 1).
+only, and every string that escapes is passed through :func:`redact`.
+
+Nothing in this module may send an operation it was not told about, either. Every
+document is checked against :data:`ALLOWED_OPERATIONS` before the throttle or the
+socket is touched, so `authSignin` can never be sent.
 """
 
 from __future__ import annotations
@@ -23,11 +24,14 @@ from pydantic import SecretStr
 from config import get_settings
 
 __all__ = [
+    "ALLOWED_OPERATIONS",
     "AUTH_ERROR_CODES",
+    "ForbiddenOperationError",
     "GraphQLError",
     "TopLoggerError",
     "TransportError",
     "build_aliased_query",
+    "check_operation",
     "looks_like_jwt",
     "post_aliased",
     "post_graphql",
@@ -43,19 +47,17 @@ AUTH_ERROR_CODES = frozenset({"UNAUTHENTICATED", "UNAUTHORIZED", "FORBIDDEN"})
 # base64url-encoded `{"` and essentially never occurs by accident.
 _JWT_SHAPED = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+){0,2}")
 
-# For redaction we also swallow any long opaque run that *could* be a token.
-# Deliberately broad: a false positive costs a less readable error message, a false
-# negative leaks a credential into a log. Too broad to assert on, though — see
-# :func:`looks_like_jwt`.
+# For redaction we also swallow any long opaque run that *could* be a token, so this
+# over-matches. Too broad to assert on — see :func:`looks_like_jwt`.
 _TOKEN_SHAPED = re.compile(f"{_JWT_SHAPED.pattern}|[A-Za-z0-9_-]{{40,}}")
 
 
 def looks_like_jwt(text: str) -> bool:
     """True if ``text`` contains something JWT-shaped.
 
-    The precise half of :func:`redact`'s pattern, for callers that must *refuse*
-    rather than rewrite — writing a raw data file, say, where a mangled payload is
-    worse than a loud failure and a long ``picPath`` must not read as a credential.
+    The precise half of :func:`redact`'s pattern, for callers that *refuse* on a
+    match, e.g. before writing a raw data file. A long opaque value such as a
+    ``picPath`` does not match.
     """
     return _JWT_SHAPED.search(text) is not None
 
@@ -108,9 +110,48 @@ class GraphQLError(TopLoggerError):
         super().__init__(f"GraphQL error {self.codes or ['<no code>']}: {detail}")
 
 
-# Rate limiting is process-wide: one lock, one clock. Hard rule 5 caps us at
-# 1 request/second and forbids parallel crawling, so serialising here is the point,
-# not a limitation.
+class ForbiddenOperationError(TopLoggerError):
+    """A document failed :func:`check_operation` and was never sent."""
+
+
+# Every operation the project sends. Adding a line here adds a TopLogger operation.
+ALLOWED_OPERATIONS = frozenset(
+    {
+        "AuthSigninRefreshToken",
+        "Catalog",
+        "GymMetadata",
+        "ClimbStats",
+        "ClimbUsers",
+        "UserHistory",
+        "UserStats",
+        "Probe",
+    }
+)
+
+_COMMENT = re.compile(r"#[^\n]*")
+_OPERATION = re.compile(r"\s*(?:query|mutation)\s+(\w+)")
+_FORBIDDEN = re.compile(r"\bauthSignin\b")  # authSigninRefreshToken does not match
+
+
+def check_operation(document: str) -> str:
+    """Return the operation name if ``document`` may be sent.
+
+    Raises:
+        ForbiddenOperationError: The document uses ``authSignin`` anywhere, or is not
+            a named operation in :data:`ALLOWED_OPERATIONS`.
+    """
+    code = _COMMENT.sub("", document)
+    if _FORBIDDEN.search(code):
+        raise ForbiddenOperationError("refusing to send a document that uses authSignin")
+    match = _OPERATION.match(code)
+    if match is None or match.group(1) not in ALLOWED_OPERATIONS:
+        name = redact(match.group(1)) if match else "an unnamed operation"
+        raise ForbiddenOperationError(f"refusing to send {name}: not in ALLOWED_OPERATIONS")
+    return match.group(1)
+
+
+# Rate limiting is process-wide: one lock, one clock, so every request in the
+# process is serialised and spaced, however many clients there are.
 _rate_lock = threading.Lock()
 _last_request_at: float | None = None
 
@@ -153,7 +194,7 @@ def post_graphql(
     """POST one GraphQL operation and return its ``data`` object.
 
     Args:
-        query: The GraphQL document.
+        query: The GraphQL document: a named operation in :data:`ALLOWED_OPERATIONS`.
         variables: Operation variables, if any.
         bearer: Token for the ``Authorization`` header. Never logged.
         secrets: Credentials this request carries besides ``bearer`` (e.g. a token
@@ -161,14 +202,19 @@ def post_graphql(
         retry: ``False`` for a non-idempotent operation, where replaying a request
             whose response was lost does real damage — refresh-token rotation
             being the case that matters here. The call then fails after one
-            attempt instead of retrying transient errors.
-        client: An ``httpx.Client`` to use instead of creating one. Tests pass a
-            client built on ``httpx.MockTransport``; nothing else should pass this.
+            attempt, transient errors included.
+        client: An ``httpx.Client`` to use; one is created per call if omitted.
+            Tests pass a client built on ``httpx.MockTransport``; nothing else
+            should pass this.
 
     Raises:
+        ForbiddenOperationError: ``query`` failed :func:`check_operation`. Nothing
+            was sent and the rate limiter was not touched.
         TransportError: HTTP-level failure that survived the configured retries.
         GraphQLError: The response carried a GraphQL ``errors`` array.
     """
+    check_operation(query)  # before the throttle: a refused document costs no request
+
     settings = get_settings()
     headers = {"Content-Type": "application/json"}
     if bearer is not None:
@@ -208,8 +254,8 @@ def post_graphql(
                 )
 
             if response.status_code >= 400:
-                # A 4xx is a request we got wrong, or a dead credential. Retrying
-                # burns requests against a rate limit for no possible gain.
+                # A 4xx is a malformed request or a dead credential; a retry would
+                # fail the same way, so it is never retried.
                 raise TransportError(
                     f"TopLogger returned {response.status_code}"
                     f"{_body_excerpt(response, all_secrets)}"
@@ -232,9 +278,8 @@ def _body_excerpt(response: httpx.Response, secrets: Sequence[SecretStr | str]) 
     """Return a short, redacted slice of an error response body, or ``""``.
 
     A 4xx from a GraphQL endpoint carries the reason — an unknown field, an argument
-    of the wrong type — and dropping it turns a precise complaint into a bare number.
-    It is also the only way to read a schema here, since introspection is disabled
-    and a malformed query is answered with 400 rather than a 200 carrying ``errors``.
+    of the wrong type. TopLogger answers a query that fails validation with 400, not
+    a 200 carrying ``errors``, so this excerpt is where validation messages appear.
 
     The body is untrusted and may echo the request, so it is truncated and passed
     through :func:`redact` with the credentials this request carried.
@@ -268,10 +313,9 @@ def _parse(
 
     if not isinstance(body, dict):
         if isinstance(body, list):
-            # Batched responses are a Phase 2 concern; reject rather than guess.
+            # Only single operations are sent, so a JSON-array response is unexpected.
             raise TransportError("unexpected batched response for a single operation")
-        # A bare JSON scalar is not a GraphQL response; say so instead of
-        # tripping over AttributeError below.
+        # A bare JSON scalar is not a GraphQL response.
         raise TransportError(f"TopLogger returned an unexpected JSON body ({type(body).__name__})")
 
     errors = body.get("errors") or []
@@ -292,17 +336,12 @@ def _parse(
 
 # --- alias batching --------------------------------------------------------
 #
-# Hard rule 5 says batch. TopLogger's endpoint accepts GraphQL aliases, so one
-# document can ask for many climbs at once: `c0: climb(id: "a") {...} c1: ...`.
-# That is a single operation, so the JSON-array response `_parse` rejects stays
-# rejected — batching here never produces one.
+# TopLogger's endpoint accepts GraphQL aliases, so one document can ask for many
+# climbs at once: `c0: climb(id: "a") {...} c1: ...`. That is a single operation,
+# so the response is never the JSON array `_parse` rejects.
 #
-# IDs go in as *literals*, not variables. Introspection is disabled
-# (docs/PROJECT_CONTEXT.md §1), so we cannot know whether an argument is declared
-# `ID!` or `String!`, and a wrong variable type fails validation. A literal has no
-# declared type to get wrong. That makes input validation non-optional, hence
-# `_SAFE_LITERAL` below — an id is only ever echoed into a document after it has
-# been proven to be a bare identifier.
+# IDs and arguments are inlined as literals, so each must pass `_SAFE_LITERAL`
+# first.
 
 _SAFE_LITERAL = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 

@@ -6,11 +6,11 @@
 # document builder that handles the top-level ones.
 #
 # §6.2, answered live 2026-09-23: `limit:` is honoured well above the web app's 10
-# (297 ticks at 10 vs 391 at 100 over the same window). It stays a parameter of
-# `fetch_user_history` rather than a constant here, so the next person can re-measure.
+# (297 ticks at 10 vs 391 at 100 over the same window). `fetch_user_history` takes
+# it as a parameter.
 #
-# Note §2 writes this selection directly on `climbDays`, with no `data { ... }`
-# wrapper — unlike `climbs` and `climbUsers`. Reproduced as captured.
+# This selection sits directly on `climbDays`, with no `data { ... }` wrapper —
+# unlike `climbs` and `climbUsers` (as captured in §2).
 
   statsAtDate
   bouldersGrade

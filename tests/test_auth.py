@@ -1,10 +1,9 @@
 """Tests for the refresh-token flow.
 
 The keychain is replaced with an in-memory dict and HTTP with
-``httpx.MockTransport``; nothing touches the real keychain or the network
-(hard rule 6).
+``httpx.MockTransport``; nothing touches the real keychain or the network.
 
-Fixture tokens are deliberately NOT JWT-shaped: ``tests/`` is tracked and scanned by
+Fixture tokens must not be JWT-shaped: ``tests/`` is tracked and scanned by
 ``test_repo_hygiene.py``, whose ``eyJ...`` pattern would fire on a realistic fake.
 """
 
@@ -82,8 +81,8 @@ def test_old_refresh_token_is_gone_after_rotation(fake_keychain):
 def test_new_token_is_persisted_before_returning(fake_keychain, monkeypatch):
     """The 'killed mid-run' case: crash right after the write, token must survive.
 
-    Hard rule 3 is about ordering. If the store happened after the return — or after
-    any further work — an interruption here would leave a dead token behind.
+    If the store happened after the return — or after any further work — an
+    interruption here would leave a dead token behind.
     """
     _seed(fake_keychain)
 
@@ -185,7 +184,7 @@ def test_failure_to_store_new_token_is_loud(fake_keychain, monkeypatch):
 
 
 def test_no_token_value_appears_in_any_auth_error(fake_keychain):
-    """Hard rule 1: tokens never appear in exceptions."""
+    """Tokens never appear in exceptions."""
     _seed(fake_keychain)
 
     def handler(request):
@@ -219,7 +218,7 @@ def test_secret_str_does_not_leak_in_repr(fake_keychain):
 
 
 def test_lock_is_reentrant_in_process(tmp_path):
-    """Phase 2 wraps a whole sync; get_access_token() acquires again from inside."""
+    """A sync holds the lock throughout; get_access_token() acquires it again inside."""
     lock = tmp_path / "sync.lock"
     with auth.sync_lock(lock), auth.sync_lock(lock):
         pass  # must not deadlock
@@ -248,7 +247,7 @@ def _grab_lock(path, ready, result):
 
 
 def test_second_process_fails_fast(tmp_path):
-    """Two syncs must never overlap (hard rule 3)."""
+    """Two syncs must never overlap."""
     lock = tmp_path / "sync.lock"
     ctx = multiprocessing.get_context("spawn")
     ready = ctx.Event()
@@ -276,10 +275,10 @@ def _rejecting_handler(request):
 
 
 def test_fresh_env_token_overrides_dead_keychain_token(fake_keychain, monkeypatch, capsys):
-    """The trap this fixes: a dead token in the keychain shadowing a fresh paste.
+    """A dead token in the keychain must not shadow a fresh paste into .env.
 
-    After a failed run the keychain can hold a rejected token. Pasting a new one into
-    .env is the obvious fix, and it must actually take effect.
+    After a failed run the keychain can hold a rejected token; a new one pasted into
+    .env must take effect.
     """
     _seed(fake_keychain, "fake-refresh-token-dead")
     monkeypatch.setenv("TOPLOGGER_REFRESH_TOKEN", "fake-refresh-token-fresh")
@@ -349,7 +348,7 @@ def test_expired_error_explains_the_keychain_precedence(fake_keychain, monkeypat
 
 
 def test_refresh_is_never_retried(fake_keychain):
-    """Hard rule 3: rotation is not idempotent, so a lost response must not be replayed.
+    """Rotation is not idempotent, so a lost response must not be replayed.
 
     A retry would send a token TopLogger may have already killed, burning the pair it
     issued in the attempt we did not see the answer to.

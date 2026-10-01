@@ -2,7 +2,7 @@
 
 The adapter is swapped for the stub `Source` from ``test_sync``: these tests are
 about dispatch, flags and failure reporting, not about TopLogger. Nothing here
-touches the network (hard rule 6).
+touches the network.
 """
 
 import pytest
@@ -98,7 +98,7 @@ def test_all_runs_every_sync_in_order(stub_source):
 
 
 def test_all_uses_one_source_for_the_whole_run(stub_source, monkeypatch):
-    """Otherwise the auth probe and the access token get paid for four times."""
+    """One source per run, so the auth probe and the access token are paid for once."""
     built = []
     monkeypatch.setattr(cli, "_source", lambda gym_id=None: (built.append(1), stub_source)[1])
 

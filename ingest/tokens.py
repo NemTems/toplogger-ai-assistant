@@ -1,14 +1,12 @@
 """One access token per sync.
 
 :func:`sources.toplogger.auth.get_access_token` rotates the stored refresh token on
-every call (hard rule 3). That makes it the wrong thing to call per request: a sync
-issuing hundreds of requests at 1 rps would rotate the credential hundreds of times,
-and every rotation is a window in which a crash between TopLogger issuing the new
-token and the keychain accepting it costs a manual browser login.
+every call, and a crash between TopLogger issuing the new token and the keychain
+accepting it costs a manual browser login. Do not call it per request.
 
-So a sync acquires once and reuses. The access token lives 10 minutes, and
-``get_access_token`` does not currently hand back its expiry, so the cache is timed
-locally with headroom rather than trusted to the exact second.
+A sync acquires once and reuses the token. The access token lives 10 minutes and
+``get_access_token`` does not return its expiry, so the cache is timed locally with
+headroom.
 """
 
 from __future__ import annotations
@@ -70,8 +68,8 @@ class AccessTokenProvider:
         """
         with self._lock:
             if self._token is None or (self._clock() - self._acquired_at) >= self._ttl:
-                # Timed from before the call, not after: the ten minutes start when
-                # TopLogger issues the token, not when we finish reading the response.
+                # Timed from before the call: the ten minutes start when TopLogger
+                # issues the token.
                 started = self._clock()
                 token = auth.get_access_token(**self._post_kwargs)
                 # Only on success — a failed refresh must not reset the cache's age

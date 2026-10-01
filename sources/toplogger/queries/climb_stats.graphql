@@ -1,10 +1,9 @@
 # Selection set for `climb(gymId: ..., id: ...)` — per-climb difficulty and quality
-# histograms. Used under aliases (`c0: climb(...) c1: climb(...)`), so this is a
-# selection set rather than a document; `client.post_aliased` wraps it.
+# histograms. A selection set only: `client.post_aliased` wraps it under aliases
+# (`c0: climb(...) c1: climb(...)`).
 #
 # §3: the histograms are tiny (1-4 votes), so any consensus grade derived from them
-# needs a minimum vote count or shrinkage toward the setter grade. That is a Phase 4
-# concern — this layer only fetches.
+# needs a minimum vote count or shrinkage toward the setter grade.
 
     gradeAdmin
     gradeVoteStats {

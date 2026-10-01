@@ -1,13 +1,13 @@
 # Selection set for `climbUsers(gymId:, climbId:, ticked: true, pagination:)` —
 # the toppers list, which is the highest-risk query in the project.
 #
-# HARD RULE 4, FIRST DEFENCE. The server will happily return other climbers'
-# names, user IDs and avatars here. This selection asks for NONE of that: only
-# the tick type and the tick date, which carry no identity. Do not add a `user`,
-# `name`, `id` or avatar field to this file for any reason — `aggregate_toppers`
-# is the second defence, and neither is meant to carry the other.
+# FIRST DEFENCE against storing other people's data. The server will happily return
+# other climbers' names, user IDs and avatars here. This selection asks for NONE of
+# that: only the tick type and the tick date, which carry no identity. Do not add a
+# `user`, `name`, `id` or avatar field to this file for any reason —
+# `aggregate_toppers` is the second defence, and neither is meant to carry the other.
 #
-# See catalog.graphql on why the arguments are inlined by adapter.py.
+# Arguments are inlined by adapter.py, as for catalog.graphql.
 
   data {
     tickType

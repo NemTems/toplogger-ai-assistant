@@ -1,4 +1,4 @@
-"""Repo hygiene guard — the real acceptance check for Phase 0.
+"""Repo hygiene guard.
 
 Verifies two things git itself can tell us, without ever touching the
 network or any personal data:
@@ -7,7 +7,7 @@ network or any personal data:
 2. No file *tracked* by git contains a credential-shaped string.
 
 If this repo is not a git repository (or git is unavailable), the whole
-module is skipped rather than failed — there is nothing to check.
+module is skipped.
 """
 
 import re
@@ -68,27 +68,18 @@ def test_sensitive_paths_are_gitignored(relpath):
 # aren't tracked anyway) for patterns that look like an actual leaked
 # credential, not just prose that mentions the concept.
 #
-# Design notes on avoiding false positives while still catching a real leak:
-#
-# - *.md files are excluded outright. AGENTS.md and CLAUDE.md legitimately
-#   discuss `authSignin`, "refresh token", etc. while describing the rules
-#   against using them — scanning docs for these words would only ever find
-#   prose, never a leak, so we don't scan docs at all.
-# - This test file itself is excluded, since it necessarily contains these
-#   patterns as string literals in order to define them.
-# - "refresh_token" is matched only in *assignment* position with a quoted
+# - Markdown files are skipped: they discuss the forbidden names as prose.
+# - This test file is skipped: it defines the patterns as string literals.
+# - "refresh_token" matches only in *assignment* position with a quoted
 #   literal value of plausible token length (e.g. `refresh_token = "abc..."`
 #   or `"refresh_token": "abc..."`). Plain references to the field/key name
 #   (`response["refresh_token"]`, `refresh_token: str`, passing a variable)
-#   do not match — those are normal, expected code in sources/toplogger/.
-# - "eyJ" (base64 JWT header prefix) is matched only when followed by a
-#   run of base64url characters long enough to be an actual token fragment,
-#   not a coincidental three-letter substring.
-# - "TOPLOGGER_PASSWORD" and "authSignin(" are matched as bare substrings:
-#   neither should ever appear in tracked code at all. `authSignin(` (with
-#   the open paren, i.e. an actual call) deliberately does NOT match the
-#   allowed `authSigninRefreshToken(` operation, since the character after
-#   "authSignin" there is "R", not "(".
+#   do not match.
+# - "eyJ" (base64 JWT header prefix) matches only when followed by a run of
+#   base64url characters long enough to be a token fragment.
+# - "TOPLOGGER_PASSWORD" and "authSignin(" match as bare substrings.
+#   `authSignin(` does not match `authSigninRefreshToken(`: the character
+#   after "authSignin" there is "R", not "(".
 CREDENTIAL_PATTERNS: dict[str, re.Pattern[str]] = {
     "jwt-shaped string": re.compile(r"eyJ[A-Za-z0-9_-]{15,}"),
     "refresh_token literal assignment": re.compile(
