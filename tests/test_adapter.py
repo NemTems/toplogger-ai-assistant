@@ -1,12 +1,11 @@
 """Tests for the TopLogger source adapter.
 
 Every request is served by ``httpx.MockTransport`` and every fixture is hand-written;
-nothing here touches the network (hard rule 6).
+nothing here touches the network.
 
 The test that matters most is ``test_aggregate_toppers_discards_identities``: it feeds
 the aggregator a page full of invented names and user IDs and asserts none of them
-survive into the result. Hard rule 4 has no second chance — once an identity reaches a
-raw file it has been persisted.
+survive into the result. Once an identity reaches a raw file it has been persisted.
 """
 
 import json
@@ -86,7 +85,7 @@ def test_name_is_stable():
 
 
 def test_probe_costs_one_extra_request_once_per_operation():
-    """Open question §6.1 is answered by trying, and the answer is cached per instance."""
+    """Whether an operation needs auth is found by trying; the answer is cached per instance."""
     seen = []
 
     def handler(request):
@@ -158,8 +157,8 @@ def test_any_first_failure_is_retried_once_with_a_token():
 def test_a_query_broken_both_ways_raises_the_authenticated_error():
     """With auth eliminated as the variable, the second attempt names the real fault.
 
-    Raising the *first* error instead once hid a `perPage` cap behind a stale
-    "Please sign in" — the unauthenticated attempt's complaint was the wrong one.
+    The unauthenticated attempt's error can be a stale "Please sign in" that hides the
+    real fault, such as a `perPage` cap.
     """
     calls = []
 
@@ -226,7 +225,7 @@ def test_token_supplier_is_called_for_every_authenticated_request():
 
 
 def test_bearer_token_never_reaches_a_raised_exception():
-    """Hard rule 1: an API error that echoes the token back must not carry it out."""
+    """An API error that echoes the token back must not carry it out."""
 
     def handler(request):
         if request.headers.get("Authorization") is None:
@@ -253,7 +252,7 @@ def test_fetch_catalog_returns_the_payload_and_reads_its_ids():
     with source(handler) as src:
         payload = src.fetch_catalog()
 
-    # clmb-ccc is the fixture's grade == 0 row, filtered per §3.
+    # clmb-ccc is the fixture's grade == 0 row, which is filtered out.
     assert src.climb_ids(payload) == ["clmb-aaa", "clmb-bbb"]
 
 
@@ -263,7 +262,7 @@ def test_climb_ids_accepts_a_bare_row_list_and_dedupes():
 
 
 def test_climb_ids_filters_ungraded_placeholders():
-    """§3: `grade == 0` is a placeholder, not an easy climb. Absent is not zero."""
+    """`grade == 0` is a placeholder, not an easy climb. Absent is not zero."""
     rows = [
         {"id": "graded", "grade": 633},
         {"id": "placeholder", "grade": 0},
@@ -394,7 +393,7 @@ def test_toppers_respects_the_page_cap(monkeypatch):
 
 
 def test_toppers_query_asks_for_no_identifying_field():
-    """Hard rule 4, first defence: the selection set itself must stay identity-free."""
+    """The toppers selection set itself must stay identity-free."""
     fields = {
         line.strip().rstrip("{").strip() for line in adapter._selection("climb_users").splitlines()
     }
@@ -405,7 +404,7 @@ def test_toppers_query_asks_for_no_identifying_field():
 
 
 def test_aggregate_toppers_discards_identities():
-    """The regression test for hard rule 4. Counts right, identities gone."""
+    """Counts right, identities gone."""
     fixture = load_fixture("climb_users_pages.json")
 
     result = aggregate_toppers(fixture["pages"])
@@ -424,7 +423,7 @@ def test_aggregate_toppers_discards_identities():
 
 
 def test_aggregate_toppers_decodes_tick_types():
-    """§3: 2 is a flash, 1 a redpoint/top, 0 unconfirmed and counted on its own."""
+    """2 is a flash, 1 a redpoint/top, 0 unconfirmed and counted on its own."""
     pages = [{"data": [_topper_row(2), _topper_row(2), _topper_row(1), _topper_row(0)]}]
 
     result = aggregate_toppers(pages)
@@ -468,10 +467,9 @@ def test_aggregate_toppers_of_nothing_is_all_zeros():
 
 
 def test_user_history_limit_is_a_parameter_not_an_assumption():
-    """§6.2: the same window at two limits, so the cap can be re-measured, not assumed.
+    """`limit:` defaults to 100, and a caller's limit changes nothing else in the query.
 
-    Answered live 2026-09-23 — `limit:` is honoured well above the web app's 10 — so
-    the default is now 100. The parameter stays because the answer could change.
+    Measured live 2026-09-23: `limit:` is honoured well above the web app's 10.
     """
     queries = []
 
@@ -539,7 +537,7 @@ def test_an_id_that_is_not_a_bare_identifier_is_refused_before_any_request():
 
 
 def test_probe_selection_returns_the_validation_messages():
-    """Introspection is off (§1), so a wrong selection is how we learn a type's shape."""
+    """Introspection is off, so a wrong selection is how we learn a type's shape."""
 
     def handler(request):
         assert request.headers.get("Authorization") is None

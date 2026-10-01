@@ -26,7 +26,6 @@ from config import get_settings
 __all__ = [
     "ALLOWED_OPERATIONS",
     "AUTH_ERROR_CODES",
-    "FORBIDDEN_FIELDS",
     "ForbiddenOperationError",
     "GraphQLError",
     "TopLoggerError",
@@ -112,166 +111,43 @@ class GraphQLError(TopLoggerError):
 
 
 class ForbiddenOperationError(TopLoggerError):
-    """A document failed the operation allowlist and was never sent.
-
-    Raised before throttling, so a refused document costs no request and leaves the
-    rate limiter's clock alone. The message names the operation at most — never the
-    document body or its variables, either of which can carry a token.
-    """
+    """A document failed :func:`check_operation` and was never sent."""
 
 
-# --- operation allowlist ---------------------------------------------------
-#
-# Auth only ever goes through `authSigninRefreshToken`, never `authSignin` (which
-# needs a reCAPTCHA and so is manual-only). Every request passes through
-# `post_graphql`, which refuses any document not declared here.
-#
-# Pairs, not bare names, so an allowlisted name cannot change kind: `Catalog` is a
-# query and may only ever be sent as one. The single mutation is the refresh.
-# Adding a line here adds a TopLogger operation.
-ALLOWED_OPERATIONS: frozenset[tuple[str, str]] = frozenset(
+# Every operation the project sends. Adding a line here adds a TopLogger operation.
+ALLOWED_OPERATIONS = frozenset(
     {
-        ("mutation", "AuthSigninRefreshToken"),  # auth._refresh
-        ("query", "Catalog"),  # TopLoggerSource.fetch_catalog
-        ("query", "GymMetadata"),  # TopLoggerSource.fetch_gym_metadata
-        ("query", "ClimbStats"),  # TopLoggerSource.fetch_climb_stats, aliased
-        ("query", "ClimbUsers"),  # TopLoggerSource._fetch_toppers
-        ("query", "UserHistory"),  # TopLoggerSource.fetch_user_history
-        ("query", "UserStats"),  # TopLoggerSource.fetch_user_stats
-        # TopLoggerSource.probe_selection: a selection that fails validation, whose
-        # error names a type's fields. Its selection is caller-supplied, so the
-        # field check below applies regardless of the name.
-        ("query", "Probe"),
+        "AuthSigninRefreshToken",
+        "Catalog",
+        "GymMetadata",
+        "ClimbStats",
+        "ClimbUsers",
+        "UserHistory",
+        "UserStats",
+        "Probe",
     }
 )
 
-# Names refused anywhere in a document, whatever the operation is called. Checked
-# independently of the allowlist, which alone would pass
-# `query Probe { authSignin { ... } }`.
-FORBIDDEN_FIELDS: frozenset[str] = frozenset({"authSignin"})
-
-# A minimal GraphQL lexer: just enough to find the operation head and every name
-# token with comments and string literals out of the way. Comments matter because
-# queries/auth_signin_refresh_token.graphql is sent verbatim and its comment says
-# "never paired with `authSignin`"; strings matter because a `{` inside one must not
-# move the brace depth. Anything this cannot tokenise is refused, not guessed at.
-_GRAPHQL_TOKEN = re.compile(
-    r"""
-    (?P<ignored>[\s,\ufeff]+|\#[^\n\r]*)
-    | (?P<string>\"\"\"(?:\\\"\"\"|[^"]|"(?!""))*\"\"\"|"(?:\\.|[^"\\\n\r])*")
-    | (?P<name>[_A-Za-z][_0-9A-Za-z]*)
-    | (?P<number>-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)
-    | (?P<punct>\.\.\.|[!$&():=@\[\]{|}])
-    """,
-    re.VERBOSE,
-)
-
-_OPERATION_TYPES = frozenset({"query", "mutation", "subscription"})
-_CLOSERS = {"{": "}", "(": ")", "[": "]"}
+_COMMENT = re.compile(r"#[^\n]*")
+_OPERATION = re.compile(r"\s*(?:query|mutation)\s+(\w+)")
+_FORBIDDEN = re.compile(r"\bauthSignin\b")  # authSigninRefreshToken does not match
 
 
-def _tokenize(document: str) -> list[tuple[str, str]]:
-    """Return the ``(kind, text)`` name and punctuator tokens of ``document``.
-
-    Comments, whitespace, commas, strings and numbers are dropped: none of them can
-    name an operation or select a field.
-    """
-    tokens: list[tuple[str, str]] = []
-    pos = 0
-    while pos < len(document):
-        match = _GRAPHQL_TOKEN.match(document, pos)
-        if match is None:
-            # The offset, not the text: the text could be anything, a token included.
-            raise ForbiddenOperationError(
-                f"refusing to send a document that does not tokenise (offset {pos})"
-            )
-        if match.lastgroup in ("name", "punct"):
-            tokens.append((match.lastgroup, match.group()))
-        pos = match.end()
-    return tokens
-
-
-def _definition_heads(tokens: list[tuple[str, str]]) -> list[list[tuple[str, str]]]:
-    """Split a token stream into top-level definitions, keeping only each one's head.
-
-    The head is everything at depth 0 — ``query Name ( @dir {`` — which is all the
-    allowlist needs. A definition ends when a ``}`` brings the depth back to 0;
-    brackets are tracked together so an object default inside a variable list
-    cannot end a definition early. Unbalanced input is refused.
-    """
-    heads: list[list[tuple[str, str]]] = []
-    current: list[tuple[str, str]] | None = None
-    stack: list[str] = []
-    for kind, text in tokens:
-        if not stack:
-            if current is None:
-                current = []
-                heads.append(current)
-            current.append((kind, text))
-        if text in _CLOSERS:
-            stack.append(_CLOSERS[text])
-        elif text in _CLOSERS.values():
-            if not stack or stack.pop() != text:
-                raise ForbiddenOperationError(
-                    "refusing to send a document with unbalanced brackets"
-                )
-            if not stack and text == "}":
-                current = None
-    if stack or current is not None:
-        raise ForbiddenOperationError("refusing to send an incomplete document")
-    return heads
-
-
-def check_operation(document: str) -> tuple[str, str]:
-    """Return ``(operation_type, name)`` if ``document`` may be sent, else raise.
-
-    A document may be sent only if it holds exactly one definition, that definition
-    is a *named* operation listed in :data:`ALLOWED_OPERATIONS` with the same type,
-    and no name token anywhere in it is in :data:`FORBIDDEN_FIELDS`.
-
-    Anonymous operations, multi-operation documents (the server would pick which
-    one runs from ``operationName``, which is never sent) and fragments are refused.
+def check_operation(document: str) -> str:
+    """Return the operation name if ``document`` may be sent.
 
     Raises:
-        ForbiddenOperationError: The document fails any of the above. Raised before
-            anything is sent; the message never quotes the document body.
+        ForbiddenOperationError: The document uses ``authSignin`` anywhere, or is not
+            a named operation in :data:`ALLOWED_OPERATIONS`.
     """
-    tokens = _tokenize(document)
-
-    # Checked first, regardless of operation name. A whole-token match, so
-    # `authSigninRefreshToken` is a different name and passes. It also catches the
-    # name used as an alias, argument or enum value.
-    forbidden = sorted(FORBIDDEN_FIELDS.intersection(t for k, t in tokens if k == "name"))
-    if forbidden:
-        raise ForbiddenOperationError(
-            f"refusing to send a document that references {', '.join(forbidden)} "
-            "(CLAUDE.md hard rule 2: login is manual-only)"
-        )
-
-    heads = _definition_heads(tokens)
-    if len(heads) != 1:
-        raise ForbiddenOperationError(
-            f"refusing to send a document with {len(heads)} definitions; exactly one "
-            "named operation is allowed"
-        )
-
-    head = heads[0]
-    op_type = head[0][1]
-    if op_type == "{":
-        raise ForbiddenOperationError("refusing to send an anonymous query shorthand")
-    if op_type not in _OPERATION_TYPES:
-        raise ForbiddenOperationError(
-            "refusing to send a document whose definition is not an operation"
-        )
-    if len(head) < 2 or head[1][0] != "name":
-        raise ForbiddenOperationError(f"refusing to send an anonymous {op_type}")
-
-    name = head[1][1]
-    if (op_type, name) not in ALLOWED_OPERATIONS:
-        raise ForbiddenOperationError(
-            f"refusing to send {op_type} {redact(name)}: not in ALLOWED_OPERATIONS"
-        )
-    return op_type, name
+    code = _COMMENT.sub("", document)
+    if _FORBIDDEN.search(code):
+        raise ForbiddenOperationError("refusing to send a document that uses authSignin")
+    match = _OPERATION.match(code)
+    if match is None or match.group(1) not in ALLOWED_OPERATIONS:
+        name = redact(match.group(1)) if match else "an unnamed operation"
+        raise ForbiddenOperationError(f"refusing to send {name}: not in ALLOWED_OPERATIONS")
+    return match.group(1)
 
 
 # Rate limiting is process-wide: one lock, one clock, so every request in the
@@ -318,8 +194,7 @@ def post_graphql(
     """POST one GraphQL operation and return its ``data`` object.
 
     Args:
-        query: The GraphQL document. Must hold exactly one named operation from
-            :data:`ALLOWED_OPERATIONS`; see :func:`check_operation`.
+        query: The GraphQL document: a named operation in :data:`ALLOWED_OPERATIONS`.
         variables: Operation variables, if any.
         bearer: Token for the ``Authorization`` header. Never logged.
         secrets: Credentials this request carries besides ``bearer`` (e.g. a token
@@ -338,9 +213,7 @@ def post_graphql(
         TransportError: HTTP-level failure that survived the configured retries.
         GraphQLError: The response carried a GraphQL ``errors`` array.
     """
-    # First, before settings, headers or the throttle: a refused document costs no
-    # request and leaves the rate limiter untouched.
-    check_operation(query)
+    check_operation(query)  # before the throttle: a refused document costs no request
 
     settings = get_settings()
     headers = {"Content-Type": "application/json"}

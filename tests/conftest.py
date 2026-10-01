@@ -3,8 +3,7 @@
 Tests must never depend on, or leak, the developer's real environment. The
 developer running these tests locally has a real ``.env`` file (and/or real
 ``TOPLOGGER_*`` env vars) in the repo root, which may contain a real personal
-``TOPLOGGER_USER_ID`` (hard rule 4 — never persist other people's data, and by
-extension personal data must never leak into or influence a test run).
+``TOPLOGGER_USER_ID`` that must not leak into or influence a test run.
 """
 
 import os

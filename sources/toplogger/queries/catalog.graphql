@@ -1,10 +1,7 @@
 # Selection set for `climbs(gymId: ..., climbType: boulder)` — the public catalog.
 #
-# This file holds a *selection set*, not a standalone document: the arguments are
-# inlined by `adapter.py`, for the same reason `client.build_aliased_query` inlines
-# ids. Introspection is disabled (docs/PROJECT_CONTEXT.md §1), so we cannot know
-# whether `gymId` is declared `ID!` or `String!`, and a variable with the wrong
-# declared type fails validation. A literal has no declared type to get wrong.
+# This file holds a *selection set*, not a standalone document: `adapter.py` builds
+# the document and inlines the arguments as literals.
 #
 # Fields are the ones captured from devtools (§2). `#` comments are stripped
 # before the text is sent.
@@ -32,7 +29,7 @@
       id
       color
     }
-    # Setter identity is the one person-level field hard rule 4 allows.
+    # Setter identity is the one person-level field that may be stored.
     climbSetters {
       gymAdmin {
         id

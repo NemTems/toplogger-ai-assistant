@@ -1,17 +1,12 @@
 """``python -m ingest`` — the sync commands.
 
-This module is the composition root: it is where the concrete adapter is chosen.
-:mod:`ingest.sync` below it speaks only the ``Source`` protocol and would not notice
-a second adapter appearing.
+The composition root: the one place the concrete adapter is chosen.
+:mod:`ingest.sync` below it speaks only the ``Source`` protocol. Two other modules
+import helpers from ``sources.toplogger``: :mod:`ingest.raw_store` (the
+credential-shape check) and :mod:`ingest.tokens` (the refresh-token flow).
 
-Two other modules here do reach into ``sources.toplogger``, for helpers rather than
-for field names: :mod:`ingest.raw_store` borrows the credential-shape check, and
-:mod:`ingest.tokens` wraps the refresh-token flow. Both would want to move — the
-check to a shared module, the token cache into the adapter — the day a second source
-exists. Neither blocks that day arriving.
-
-Every command holds the sync lock for its whole run (hard rule 3) and acquires at
-most one access token (see :class:`ingest.tokens.AccessTokenProvider`).
+Every command holds the sync lock for its whole run and acquires at most one access
+token (see :class:`ingest.tokens.AccessTokenProvider`).
 """
 
 from __future__ import annotations
@@ -65,10 +60,10 @@ def _report(result: SyncReport) -> None:
 
 
 def _run(fn, *args: Any, **kwargs: Any) -> SyncReport:
-    """Run one sync under the lock, turning known failures into clean exits.
+    """Run one sync under the lock, turning known failures into a one-line error and exit 1.
 
-    A traceback in a nightly job's log tells you less than one line does, and an
-    exception rendered by typer risks printing something we redact everywhere else.
+    An exception left for typer to render could print values that are redacted
+    everywhere else.
     """
     try:
         with sync_lock():
@@ -114,7 +109,7 @@ def sync_all(dry_run: DryRun = False, max_climbs: MaxClimbs = None, gym_id: GymI
     """Everything, in dependency order: catalog, then stats and toppers, then me.
 
     One source instance for the whole run, so the unauthenticated probe and the
-    access token are each paid for once rather than four times.
+    access token are each paid for once.
     """
     source = _source(gym_id)
     try:
@@ -139,17 +134,17 @@ def probe(gym_id: GymId = None) -> None:
 
     * Which operations actually require a token (§6.1). The adapter answers this as
       a side effect of trying each one unauthenticated first.
-    * What fields ``climbUsers`` really exposes. Introspection is disabled, so we
-      send a deliberately invalid selection and read the validation error, which
-      names the valid fields — and runs before execution, so it costs no token.
+    * What fields ``climbUsers`` really exposes. Introspection is disabled, so this
+      sends an invalid selection and reads the validation error, which names the
+      valid fields. Validation runs before execution, so it costs no token.
     """
     source = _source(gym_id)
     findings: dict[str, Any] = {}
 
     with sync_lock():
         try:
-            # Touching the catalog is what makes the adapter run its unauthenticated
-            # probe; the payload is deliberately discarded, not written.
+            # Fetching the catalog makes the adapter run its unauthenticated probe.
+            # The payload is discarded.
             source.fetch_catalog()
         except TopLoggerError as exc:
             typer.secho(f"catalog probe failed: {exc}", fg=typer.colors.YELLOW, err=True)

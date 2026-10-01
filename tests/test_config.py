@@ -3,7 +3,7 @@
 These tests rely on the autouse `isolated_settings` fixture in conftest.py to
 strip TOPLOGGER_* env vars, avoid the developer's real .env, and clear the
 get_settings() cache — so nothing here depends on, or can leak, the
-developer's real personal data (hard rule 4).
+developer's real personal data.
 """
 
 from pathlib import Path
@@ -52,7 +52,7 @@ def test_db_path_derives_from_custom_data_dir(monkeypatch):
 
 
 def test_rate_limit_above_one_raises():
-    """Hard rule 5 (politeness) is a hard ceiling of 1 req/s — not just a default."""
+    """1 req/s is a ceiling: a higher rate is rejected."""
     with pytest.raises(ValidationError):
         Settings(rate_limit_per_second=1.5)
 
