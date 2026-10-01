@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import httpx
@@ -23,17 +23,42 @@ from pydantic import SecretStr
 from config import get_settings
 
 __all__ = [
+    "AUTH_ERROR_CODES",
     "GraphQLError",
     "TopLoggerError",
     "TransportError",
+    "build_aliased_query",
+    "looks_like_jwt",
+    "post_aliased",
     "post_graphql",
     "redact",
 ]
 
-# Anything JWT-shaped, or any long opaque run that could be a token. Deliberately
-# broad: a false positive costs a less readable error message, a false negative
-# leaks a credential into a log.
-_TOKEN_SHAPED = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+){0,2}|[A-Za-z0-9_-]{40,}")
+# GraphQL error codes that mean "you are not allowed to do this without a token".
+# Shared so the adapter's unauthenticated probe and auth.py's dead-token check agree
+# on what an auth failure looks like.
+AUTH_ERROR_CODES = frozenset({"UNAUTHENTICATED", "UNAUTHORIZED", "FORBIDDEN"})
+
+# A JWT is the only credential shape precise enough to assert on: `eyJ` is a
+# base64url-encoded `{"` and essentially never occurs by accident.
+_JWT_SHAPED = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+){0,2}")
+
+# For redaction we also swallow any long opaque run that *could* be a token.
+# Deliberately broad: a false positive costs a less readable error message, a false
+# negative leaks a credential into a log. Too broad to assert on, though — see
+# :func:`looks_like_jwt`.
+_TOKEN_SHAPED = re.compile(f"{_JWT_SHAPED.pattern}|[A-Za-z0-9_-]{{40,}}")
+
+
+def looks_like_jwt(text: str) -> bool:
+    """True if ``text`` contains something JWT-shaped.
+
+    The precise half of :func:`redact`'s pattern, for callers that must *refuse*
+    rather than rewrite — writing a raw data file, say, where a mangled payload is
+    worse than a loud failure and a long ``picPath`` must not read as a credential.
+    """
+    return _JWT_SHAPED.search(text) is not None
+
 
 # Shape matching alone cannot catch a short opaque credential, so the secrets we
 # actually sent are masked by value too. The floor stops a stray empty or
@@ -185,7 +210,10 @@ def post_graphql(
             if response.status_code >= 400:
                 # A 4xx is a request we got wrong, or a dead credential. Retrying
                 # burns requests against a rate limit for no possible gain.
-                raise TransportError(f"TopLogger returned {response.status_code}")
+                raise TransportError(
+                    f"TopLogger returned {response.status_code}"
+                    f"{_body_excerpt(response, all_secrets)}"
+                )
 
             return _parse(response, all_secrets)
 
@@ -193,6 +221,33 @@ def post_graphql(
     finally:
         if owns_client:
             http.close()
+
+
+# Enough of an error body to name the offending field, not enough to paste a page
+# of HTML into a log line.
+_BODY_EXCERPT_CHARS = 600
+
+
+def _body_excerpt(response: httpx.Response, secrets: Sequence[SecretStr | str]) -> str:
+    """Return a short, redacted slice of an error response body, or ``""``.
+
+    A 4xx from a GraphQL endpoint carries the reason — an unknown field, an argument
+    of the wrong type — and dropping it turns a precise complaint into a bare number.
+    It is also the only way to read a schema here, since introspection is disabled
+    and a malformed query is answered with 400 rather than a 200 carrying ``errors``.
+
+    The body is untrusted and may echo the request, so it is truncated and passed
+    through :func:`redact` with the credentials this request carried.
+    """
+    try:
+        text = response.text.strip()
+    except (UnicodeDecodeError, ValueError):
+        return ""
+    if not text:
+        return ""
+    excerpt = redact(text[:_BODY_EXCERPT_CHARS], *secrets)
+    suffix = "…" if len(text) > _BODY_EXCERPT_CHARS else ""
+    return f": {' '.join(excerpt.split())}{suffix}"
 
 
 def _attempts(attempt: int) -> str:
@@ -233,3 +288,91 @@ def _parse(
     if data is None:
         raise TransportError("TopLogger returned no data and no errors")
     return data
+
+
+# --- alias batching --------------------------------------------------------
+#
+# Hard rule 5 says batch. TopLogger's endpoint accepts GraphQL aliases, so one
+# document can ask for many climbs at once: `c0: climb(id: "a") {...} c1: ...`.
+# That is a single operation, so the JSON-array response `_parse` rejects stays
+# rejected — batching here never produces one.
+#
+# IDs go in as *literals*, not variables. Introspection is disabled
+# (docs/PROJECT_CONTEXT.md §1), so we cannot know whether an argument is declared
+# `ID!` or `String!`, and a wrong variable type fails validation. A literal has no
+# declared type to get wrong. That makes input validation non-optional, hence
+# `_SAFE_LITERAL` below — an id is only ever echoed into a document after it has
+# been proven to be a bare identifier.
+
+_SAFE_LITERAL = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+_ALIAS_PREFIX = "c"
+
+
+def _check_literal(name: str, value: str) -> str:
+    """Return ``value`` if it is safe to inline into a GraphQL document."""
+    if not isinstance(value, str) or not _SAFE_LITERAL.match(value):
+        raise ValueError(f"{name} is not a bare identifier and cannot be inlined into a query")
+    return value
+
+
+def build_aliased_query(
+    operation_name: str,
+    field: str,
+    selection: str,
+    ids: Sequence[str],
+    *,
+    id_arg: str = "id",
+    extra_args: Mapping[str, str] | None = None,
+) -> str:
+    """Build one document asking for ``field`` once per id, under ``c0..cN`` aliases.
+
+    Args:
+        operation_name: Name for the operation, for server-side logs.
+        field: The field to alias, e.g. ``"climb"``.
+        selection: The selection set body, without the outer braces.
+        ids: The ids to fetch. Order fixes the alias numbering.
+        id_arg: Argument name carrying the id.
+        extra_args: Arguments repeated on every alias, e.g. ``{"gymId": ...}``.
+
+    Raises:
+        ValueError: ``ids`` is empty, or any id/argument is not a bare identifier.
+    """
+    if not ids:
+        raise ValueError("cannot build an aliased query with no ids")
+
+    args = {k: _check_literal(k, v) for k, v in (extra_args or {}).items()}
+    fixed = "".join(f'{k}: "{v}", ' for k, v in args.items())
+
+    lines = [
+        f'  {_ALIAS_PREFIX}{i}: {field}({fixed}{id_arg}: "{_check_literal("id", cid)}") {{'
+        f"\n{selection}\n  }}"
+        for i, cid in enumerate(ids)
+    ]
+    return f"query {operation_name} {{\n" + "\n".join(lines) + "\n}"
+
+
+def post_aliased(
+    operation_name: str,
+    field: str,
+    selection: str,
+    ids: Sequence[str],
+    *,
+    id_arg: str = "id",
+    extra_args: Mapping[str, str] | None = None,
+    **post_kwargs: Any,
+) -> dict[str, Any]:
+    """POST one aliased batch and return ``{id: payload}``.
+
+    Aliases are mapped back to the ids that produced them, so callers never see the
+    ``c0``/``c1`` naming. An id the server answered with ``null`` is omitted.
+    """
+    query = build_aliased_query(
+        operation_name, field, selection, ids, id_arg=id_arg, extra_args=extra_args
+    )
+    data = post_graphql(query, **post_kwargs)
+    return {
+        cid: data[alias]
+        for i, cid in enumerate(ids)
+        if (alias := f"{_ALIAS_PREFIX}{i}") in data and data[alias] is not None
+    }

@@ -29,7 +29,12 @@ from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from config import get_settings
-from sources.toplogger.client import GraphQLError, TopLoggerError, post_graphql
+from sources.toplogger.client import (
+    AUTH_ERROR_CODES,
+    GraphQLError,
+    TopLoggerError,
+    post_graphql,
+)
 
 __all__ = [
     "AuthError",
@@ -46,8 +51,9 @@ KEYRING_USERNAME = "refresh_token"
 
 _QUERY_PATH = Path(__file__).parent / "queries" / "auth_signin_refresh_token.graphql"
 
-# GraphQL error codes that mean "this refresh token is no longer good".
-_DEAD_TOKEN_CODES = frozenset({"UNAUTHENTICATED", "UNAUTHORIZED", "FORBIDDEN"})
+# On the refresh mutation specifically, an auth error means "this refresh token is
+# no longer good" — the same codes the adapter reads as "this endpoint needs a token".
+_DEAD_TOKEN_CODES = AUTH_ERROR_CODES
 
 _MANUAL_LOGIN_INSTRUCTIONS = (
     "Log in to TopLogger in your browser, copy the refresh token from devtools, and "

@@ -1,0 +1,33 @@
+# Every field here validated against the live schema on 2026-09-23.
+# Selection set for `gym(gymId: ...)` — the vocabulary that makes a catalog row
+# readable ("Purple · Mad Rock"). See catalog.graphql on why arguments are inlined.
+#
+# docs/PROJECT_CONTEXT.md §2 names the five top-level fields but not their
+# sub-fields, so every sub-selection below is a guess modelled on the shapes the
+# catalog query confirms (`wall { id nameLoc }`, `holdColor { id color }`,
+# `climbSetters { gymAdmin { id name } }`, `climbTag { nameLoc type }`).
+# Settle them with `TopLoggerSource.probe_selection("gym", "__typename x", ...)`.
+
+  holdColors {
+    id
+    color
+    nameLoc
+  }
+  walls {
+    id
+    nameLoc
+    overhang
+  }
+  setters {
+    id
+    name
+  }
+  climbGroups {
+    id
+    nameLoc
+  }
+  climbTags {
+    id
+    nameLoc
+    type
+  }

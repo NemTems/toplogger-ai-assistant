@@ -1,0 +1,19 @@
+# Selection set for `user(id: ...)` — TopLogger's own aggregate view of the
+# authenticated user. Requires auth; about the configured user only.
+#
+# `(__ARGS__)` is substituted by adapter.py with the rendered `gradeDistribution`
+# arguments, as in user_history.graphql.
+#
+# Confirmed live 2026-09-23 by probing `GradeCount`: the split is `countRp` /
+# `countFl`, not the `rp` / `fl` that §2's prose ("split rp/fl") suggested, and
+# `count` is the combined total. `climbType` here is an ENUM — unquoted — unlike
+# `climbUserDays(climbType: "boulder")` in user_history.graphql, which takes a
+# string. TopLogger is genuinely inconsistent about this; both are as the server
+# accepts them.
+
+  gradeDistribution(__ARGS__) {
+    grade
+    count
+    countRp
+    countFl
+  }
